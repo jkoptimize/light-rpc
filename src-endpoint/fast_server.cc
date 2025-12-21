@@ -35,7 +35,8 @@ FastServer::~FastServer() {
 }
 
 void FastServer::AddService(ServiceOwnership ownership, google::protobuf::Service* service) {
-  std::string name = service->GetDescriptor()->name();
+  auto str = service->GetDescriptor()->name();
+  std::string name(str.data(), str.length());
   CHECK(service_map_.find(name) == service_map_.end());
   ServiceInfo service_info;
   service_info.ownership = ownership;

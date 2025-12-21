@@ -28,7 +28,7 @@ void GetIpByHostName(std::string &ip, std::string &name) {
 
 void GetLocalIp(std::string &local_ip) {
   // Obtain local IP automatically.
-  char hostname[20];
+  char hostname[100];
   if (gethostname(hostname, sizeof(hostname))) {
     fprintf(stderr, "Failed to get hostname.\n");
     exit(EXIT_FAILURE);
