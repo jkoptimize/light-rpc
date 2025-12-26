@@ -90,7 +90,7 @@ void FastServer::ProcessDisconnect(rdma_cm_id* conn_id) {
   CHECK(rdma_destroy_id(conn_id) == 0);
 }
 
-void FastServer::IBVEventNotifyWait(uint64_t& poll_times) {  
+void FastServer::IBVEventNotifyWait(uint64_t& poll_times) {
   auto recv_cq = shared_rsc_->GetConnMgrID()->recv_cq;
   auto recv_cq_channel = shared_rsc_->GetConnMgrID()->recv_cq_channel;
   ibv_cq* ev_cq;
@@ -110,8 +110,8 @@ void FastServer::IBVEventNotifyWait(uint64_t& poll_times) {
     CHECK(recv_wc.status == IBV_WC_SUCCESS);
     if (num == 0) continue;
     ProcessRecvWorkCompletion(recv_wc);
+    poll_times = 0;
   } while (num);
-  // poll_times = 0;
 }
 
 void FastServer::BusyPollRecvWC() {

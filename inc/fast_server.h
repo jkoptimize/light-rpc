@@ -54,6 +54,7 @@ private:
   void ProcessNotifyMessage(rdma_cm_id* conn_id, uint64_t block_addr);
   void ParseAndProcessRequest(rdma_cm_id* conn_id, void* addr, bool small_msg);
   void ReturnRPCResponse(CallBackArgs args);
+  void IBVEventNotifyWait(uint64_t& poll_times);
 
   static const int default_num_poll_th;
 };

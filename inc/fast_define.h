@@ -17,6 +17,8 @@ extern const int max_num_cache_mr;
 extern const int timeout_in_ms;
 extern const int listen_backlog;
 
+extern const int cq_poll_min_times;
+
 enum MessageType {
   FAST_SmallMessage = 1, 
   FAST_NotifyMessage = 2

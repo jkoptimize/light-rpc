@@ -121,13 +121,13 @@ void WriteLargeMessage(ibv_qp* qp,
 #ifdef TEST_SELECTIVE_SIGNALING
   // Use selective signaling to reduce CQE overhead.
   if (send_counter % 16 == 0) {
-    write_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;  
+    write_wr.send_flags = IBV_SEND_SIGNALED;  
   } else {
     write_wr.send_flags = 0;  // no CQE
   }
   send_counter++;
 #else
-  write_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;  
+  write_wr.send_flags = IBV_SEND_SIGNALED;  
 #endif  
   write_wr.wr.rdma.rkey = remote_key;
   write_wr.wr.rdma.remote_addr = remote_addr;
