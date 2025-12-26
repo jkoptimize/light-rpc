@@ -17,6 +17,7 @@ FastServer::FastServer(SharedResource* shared_rsc, int num_poll_th)
       this->BusyPollRecvWC();
     });
   }
+  CHECK(ibv_req_notify_cq(shared_rsc_->GetConnMgrID()->recv_cq, 0) == 0);
   this->conn_id_map_ = std::make_unique<SafeHashMap<rdma_cm_id*>>();
   CHECK(rdma_listen(shared_rsc_->GetConnMgrID(), listen_backlog) == 0);
   LOG_INFO("Start listening on port %d", shared_rsc_->GetLocalPort());
@@ -89,9 +90,35 @@ void FastServer::ProcessDisconnect(rdma_cm_id* conn_id) {
   CHECK(rdma_destroy_id(conn_id) == 0);
 }
 
+void FastServer::IBVEventNotifyWait(uint64_t& poll_times) {  
+  auto recv_cq = shared_rsc_->GetConnMgrID()->recv_cq;
+  auto recv_cq_channel = shared_rsc_->GetConnMgrID()->recv_cq_channel;
+  ibv_cq* ev_cq;
+  void* ev_ctx;
+  uint64_t num = 0;
+  ibv_wc recv_wc;
+
+  int ret = ibv_get_cq_event(recv_cq_channel, &ev_cq, &ev_ctx);
+  CHECK(ret != -1);
+  CHECK(ev_cq == recv_cq);
+  ibv_ack_cq_events(ev_cq, 1);
+  CHECK(ibv_req_notify_cq(ev_cq, 0) == 0);
+
+  do {
+    num = ibv_poll_cq(recv_cq, 1, &recv_wc);
+    CHECK(num != -1);
+    CHECK(recv_wc.status == IBV_WC_SUCCESS);
+    if (num == 0) continue;
+    ProcessRecvWorkCompletion(recv_wc);
+  } while (num);
+  // poll_times = 0;
+}
+
 void FastServer::BusyPollRecvWC() {
   auto recv_cq = shared_rsc_->GetConnMgrID()->recv_cq;
+  auto recv_cq_channel = shared_rsc_->GetConnMgrID()->recv_cq_channel;
   ibv_wc recv_wc;
+  uint64_t poll_times = 0;
   memset(&recv_wc, 0, sizeof(recv_wc));
   while (true) {
     int num = ibv_poll_cq(recv_cq, 1, &recv_wc);
@@ -99,9 +126,14 @@ void FastServer::BusyPollRecvWC() {
     if (num == 1) {
       CHECK(recv_wc.status == IBV_WC_SUCCESS);
       ProcessRecvWorkCompletion(recv_wc);
-    } else {
-      // Give up the CPU.
+      poll_times = 0;
+    } else if (poll_times < cq_poll_min_times) {
+      poll_times++;
+    } else if (poll_times < cq_poll_min_times * 2) {
+      poll_times++;
       std::this_thread::yield();
+    } else {
+      IBVEventNotifyWait(poll_times);
     }
   }
 }

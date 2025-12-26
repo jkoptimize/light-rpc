@@ -44,4 +44,7 @@ const int max_num_cache_mr = 5;
 const int timeout_in_ms = 1000;
 const int listen_backlog = 200;
 
+const int cq_poll_min_times = 1000;
+
+
 } // namespace fast

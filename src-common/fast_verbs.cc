@@ -3,6 +3,8 @@
 
 namespace fast {
 
+thread_local uint64_t send_counter = 0;
+
 void SendInlineMessage(ibv_qp* qp, 
                        MessageType msg_type, 
                        uint64_t msg_addr, 
@@ -19,7 +21,17 @@ void SendInlineMessage(ibv_qp* qp,
   send_wr.sg_list = &send_sg;
   send_wr.imm_data = htonl(msg_type);
   send_wr.opcode = IBV_WR_SEND_WITH_IMM;
-  send_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED | IBV_SEND_INLINE;  // gen CQE
+#ifdef TEST_SELECTIVE_SIGNALING
+  // Use selective signaling to reduce CQE overhead.
+  if (send_counter % 16 == 0) {
+    send_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED | IBV_SEND_INLINE;  
+  } else {
+    send_wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SOLICITED;  // no CQE
+  }
+  send_counter++;
+#else
+  send_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED | IBV_SEND_INLINE;  
+#endif
   CHECK(ibv_post_send(qp, &send_wr, &send_bad_wr) == 0);
 }
 
@@ -42,7 +54,17 @@ void SendSmallMessage(ibv_qp* qp,
   send_wr.sg_list = &send_sg;
   send_wr.imm_data = htonl(msg_type);
   send_wr.opcode = IBV_WR_SEND_WITH_IMM;
-  send_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;  // gen CQE
+#ifdef TEST_SELECTIVE_SIGNALING
+  // Use selective signaling to reduce CQE overhead.
+  if (send_counter % 16 == 0) {
+    send_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED | IBV_SEND_INLINE;  
+  } else {
+    send_wr.send_flags = IBV_SEND_INLINE | IBV_SEND_SOLICITED;  // no CQE
+  }
+  send_counter++;
+#else
+  send_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED | IBV_SEND_INLINE;  
+#endif
   CHECK(ibv_post_send(qp, &send_wr, &send_bad_wr) == 0);       
 }
 
@@ -62,7 +84,17 @@ void WriteInlineMessage(ibv_qp* qp,
   write_wr.num_sge = 1;
   write_wr.sg_list = &write_sg;
   write_wr.opcode = IBV_WR_RDMA_WRITE;
-  write_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;  // gen CQE
+#ifdef TEST_SELECTIVE_SIGNALING
+  // Use selective signaling to reduce CQE overhead.
+  if (send_counter % 16 == 0) {
+    write_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE; 
+  } else {
+    write_wr.send_flags = IBV_SEND_INLINE; 
+  }
+  send_counter++;
+#else
+  write_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+#endif
   write_wr.wr.rdma.rkey = remote_key;
   write_wr.wr.rdma.remote_addr = remote_addr;
   CHECK(ibv_post_send(qp, &write_wr, &write_bad_wr) == 0);
@@ -86,7 +118,17 @@ void WriteLargeMessage(ibv_qp* qp,
   write_wr.num_sge = 1;
   write_wr.sg_list = &write_sg;
   write_wr.opcode = IBV_WR_RDMA_WRITE;
-  write_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;  // gen CQE
+#ifdef TEST_SELECTIVE_SIGNALING
+  // Use selective signaling to reduce CQE overhead.
+  if (send_counter % 16 == 0) {
+    write_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;  
+  } else {
+    write_wr.send_flags = 0;  // no CQE
+  }
+  send_counter++;
+#else
+  write_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;  
+#endif  
   write_wr.wr.rdma.rkey = remote_key;
   write_wr.wr.rdma.remote_addr = remote_addr;
   CHECK(ibv_post_send(qp, &write_wr, &write_bad_wr) == 0);
