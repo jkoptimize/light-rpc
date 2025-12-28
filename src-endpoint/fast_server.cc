@@ -17,7 +17,7 @@ FastServer::FastServer(SharedResource* shared_rsc, int num_poll_th)
       this->BusyPollRecvWC();
     });
   }
-  CHECK(ibv_req_notify_cq(shared_rsc_->GetConnMgrID()->recv_cq, 0) == 0);
+  CHECK(ibv_req_notify_cq(shared_rsc_->GetConnMgrID()->recv_cq, 1) == 0);
   this->conn_id_map_ = std::make_unique<SafeHashMap<rdma_cm_id*>>();
   CHECK(rdma_listen(shared_rsc_->GetConnMgrID(), listen_backlog) == 0);
   LOG_INFO("Start listening on port %d", shared_rsc_->GetLocalPort());
@@ -102,7 +102,7 @@ void FastServer::IBVEventNotifyWait(uint64_t& poll_times) {
   CHECK(ret != -1);
   CHECK(ev_cq == recv_cq);
   ibv_ack_cq_events(ev_cq, 1);
-  CHECK(ibv_req_notify_cq(ev_cq, 0) == 0);
+  CHECK(ibv_req_notify_cq(ev_cq, 1) == 0);
 
   do {
     num = ibv_poll_cq(recv_cq, 1, &recv_wc);
