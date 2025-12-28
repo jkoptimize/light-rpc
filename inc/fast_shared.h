@@ -48,12 +48,14 @@ private:
   int max_local_block_;
   std::atomic<uint64_t> schedule_idx_;
 
+  //全局级资源
   boost::lockfree::queue<uint64_t> addr_queue_;
   ibv_mr* block_pool_mr_;
 
   std::vector<std::thread> threads_vec_;
   std::unordered_map<std::thread::id, int> thid_idx_map_;
   std::vector<std::unique_ptr<boost::asio::io_context>> io_ctx_vec_;
+  //线程内缓存资源
   std::vector<std::unique_ptr<LocalMRCache>> mr_cache_vec_;
   std::vector<std::unique_ptr<ListWithSize>> block_cache_vec_;
 
