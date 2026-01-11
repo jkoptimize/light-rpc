@@ -1,5 +1,4 @@
 #include "inc/fast_shared.h"
-#include "inc/fast_define.h"
 #include "inc/fast_log.h"
 
 static const int min_cqe_num = 512;
@@ -98,7 +97,39 @@ void SharedResource::CreateBlockPool() {
   uint64_t uint64_addr = reinterpret_cast<uint64_t>(pool_addr);
   for (int i = 0; i < num_blocks; i++) {
     addr_queue_.unsynchronized_push(uint64_addr + i * msg_threshold);
+    block_num_.fetch_add(1, std::memory_order_relaxed);
   }
+}
+
+void SharedResource::ExtendBlockPool() {
+  bool expectFalse = false;
+  if (!isExtendingPool_.compare_exchange_strong(expectFalse, true)) {
+    return; // 已经有线程在扩展内存池，直接返回
+  }
+  if (!isNeedExtendPool()) {
+    isExtendingPool_.store(false);
+    return; // 刚刚被其它线程扩展，无需再次扩展,解决“虚假唤醒”问题
+  }
+  LOG_INFO("## Begining to extend block pool.");
+  void* pool_addr = malloc(block_pool_size_);
+  CHECK(pool_addr != nullptr);
+  ibv_mr* new_block_pool_mr = ibv_reg_mr(
+    cm_id_->pd, 
+    pool_addr, 
+    block_pool_size_, 
+    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE
+  );
+  CHECK(new_block_pool_mr != nullptr);
+  block_pool_size_ *= 2;    // 内存池扩展时，申请与当前等大的内存块，总大小翻倍
+
+  uint64_t num_blocks = block_pool_size_ / msg_threshold;
+  uint64_t uint64_addr = reinterpret_cast<uint64_t>(pool_addr);
+  for (int i = 0; i < num_blocks; i++) {
+    addr_queue_.push(uint64_addr + i * msg_threshold);
+    block_num_.fetch_add(1, std::memory_order_relaxed);
+  }
+  isExtendingPool_.store(false);
+  LOG_INFO("## Finished extending block pool.");
 }
 
 void SharedResource::PostOneRecvRequest(uint64_t& block_addr) {

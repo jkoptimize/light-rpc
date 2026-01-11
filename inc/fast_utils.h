@@ -47,7 +47,6 @@ private:
   std::unordered_map<uint32_t, vType> hashmap_;
 };
 
-
 class LocalMRCache {
 public:
   LocalMRCache(int capacity): capacity_(capacity), size_(0) {}
@@ -90,5 +89,8 @@ private:
   int size_;
   std::list<ibv_mr*> mr_list_;
 };
+
+
+
 
 } // namespace fast

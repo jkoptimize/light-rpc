@@ -1,3 +1,4 @@
+#include <boost/circular_buffer.hpp>
 #include "inc/fast_channel.h"
 #include "inc/fast_define.h"
 #include "inc/fast_log.h"
@@ -5,6 +6,9 @@
 #include "build/fast_impl.pb.h"
 
 namespace fast {
+
+extern thread_local uint64_t send_counter;
+thread_local boost::circular_buffer<AddressInfo> ibvsend_client_addrs(32);
 
 FastChannel::FastChannel(UniqueResource* unique_rsc, std::string dest_ip, int dest_port)
   : unique_rsc_(unique_rsc), rpc_id_(1) {
@@ -108,6 +112,7 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
                      msg_addr, 
                      total_length, 
                      local_key);
+    ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS, msg_addr, send_counter));
   } else {
     // Obtain one block for receiving authority message.
     uint64_t auth_addr = 0;
@@ -152,6 +157,7 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
                       total_length + 1, 
                       authority_msg.remote_key(), 
                       authority_msg.remote_addr());
+    ibvsend_client_addrs.push_back(AddressInfo(MR_ADDRESS, reinterpret_cast<uint64_t>(large_send_mr), send_counter));
     
     // Return the block which stores authority message
     unique_rsc_->ReturnOneBlock(auth_addr);
@@ -199,12 +205,14 @@ void FastChannel::TryToPollSendWC() {
 
 void FastChannel::ProcessSendWorkCompletion(ibv_wc& send_wc) {
   if (send_wc.wr_id == 0) return;
-  if (send_wc.opcode == IBV_WC_RDMA_WRITE) {
-    ibv_mr* large_mr = reinterpret_cast<ibv_mr*>(send_wc.wr_id);
-    unique_rsc_->PutOneMRIntoCache(large_mr);
-  } else {
-    // The opcode is IBV_WC_SEND.
-    unique_rsc_->ReturnOneBlock(send_wc.wr_id);
+  while (ibvsend_client_addrs.size() > 0 && ibvsend_client_addrs.front().send_counter <= send_wc.wr_id) {
+    AddressInfo info = ibvsend_client_addrs.front();
+    if (info.type == BLOCK_ADDRESS) {
+      unique_rsc_->ReturnOneBlock(info.addr);
+    } else {
+      unique_rsc_->PutOneMRIntoCache(reinterpret_cast<ibv_mr*>(info.addr));
+    }
+    ibvsend_client_addrs.pop_front();
   }
 }
 

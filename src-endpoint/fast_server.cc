@@ -1,3 +1,4 @@
+#include <boost/circular_buffer.hpp>
 #include "inc/fast_server.h"
 #include "inc/fast_define.h"
 #include "inc/fast_log.h"
@@ -7,6 +8,9 @@
 namespace fast {
 
 const int FastServer::default_num_poll_th = std::max(1U, std::thread::hardware_concurrency() / 8U);
+
+extern thread_local uint64_t send_counter;
+thread_local boost::circular_buffer<AddressInfo> ibvsend_server_addrs(32);
 
 FastServer::FastServer(SharedResource* shared_rsc, int num_poll_th)
   : shared_rsc_(shared_rsc), 
@@ -116,7 +120,6 @@ void FastServer::IBVEventNotifyWait(uint64_t& poll_times) {
 
 void FastServer::BusyPollRecvWC() {
   auto recv_cq = shared_rsc_->GetConnMgrID()->recv_cq;
-  auto recv_cq_channel = shared_rsc_->GetConnMgrID()->recv_cq_channel;
   ibv_wc recv_wc;
   uint64_t poll_times = 0;
   memset(&recv_wc, 0, sizeof(recv_wc));
@@ -180,12 +183,14 @@ void FastServer::TryToPollSendWC(rdma_cm_id* conn_id) {
 void FastServer::ProcessSendWorkCompletion(ibv_wc& send_wc) {
   if (send_wc.wr_id == 0) return;
   int th_idx = shared_rsc_->GetThreadIndex(std::this_thread::get_id());
-  if (send_wc.opcode == IBV_WC_RDMA_WRITE) {
-    ibv_mr* large_mr = reinterpret_cast<ibv_mr*>(send_wc.wr_id);
-    shared_rsc_->PutOneMRIntoCache(th_idx, large_mr);
-  } else {
-    // The opcode is IBV_WC_SEND.
-    shared_rsc_->PutOneBlockIntoLocalCache(th_idx, send_wc.wr_id);
+  while (ibvsend_server_addrs.size() > 0 && ibvsend_server_addrs.front().send_counter <= send_wc.wr_id) {
+    AddressInfo info = ibvsend_server_addrs.front();
+    if (info.type == BLOCK_ADDRESS) {
+      shared_rsc_->PutOneBlockIntoLocalCache(th_idx, info.addr);
+    } else {
+      shared_rsc_->PutOneMRIntoCache(th_idx, reinterpret_cast<ibv_mr*>(info.addr));
+    }
+    ibvsend_server_addrs.pop_front();
   }
 }
 
@@ -329,6 +334,7 @@ void FastServer::ReturnRPCResponse(CallBackArgs args) {
                      msg_addr, 
                      total_length, 
                      shared_rsc_->GetLocalKey());
+    ibvsend_server_addrs.push_back(AddressInfo(BLOCK_ADDRESS, msg_addr, send_counter));
   } else {
     // Obtain one block for receiving authority message.
     uint64_t auth_addr = 0;
@@ -373,7 +379,8 @@ void FastServer::ReturnRPCResponse(CallBackArgs args) {
                       total_length + 1, 
                       authority_msg.remote_key(), 
                       authority_msg.remote_addr());
-    
+    ibvsend_server_addrs.push_back(AddressInfo(MR_ADDRESS, reinterpret_cast<uint64_t>(large_send_mr), send_counter));
+
     // Return the block which stores authority message
     shared_rsc_->PutOneBlockIntoLocalCache(th_idx, auth_addr);
   }

@@ -2,6 +2,7 @@
 
 #include "inc/fast_resource.h"
 #include "inc/fast_utils.h"
+#include "inc/fast_define.h"
 
 #include <rdma/rdma_cma.h>
 #include <boost/asio.hpp>
@@ -41,15 +42,19 @@ public:
 private:
   virtual void CreateRDMAResource() override;
   void CreateBlockPool();
+  bool isNeedExtendPool();
+  void ExtendBlockPool();
 
   uint64_t block_pool_size_;
   int num_work_threads_;
   int max_local_mr_;
   int max_local_block_;
   std::atomic<uint64_t> schedule_idx_;
+  std::atomic<bool> isExtendingPool_{false};
 
   //全局级资源
   boost::lockfree::queue<uint64_t> addr_queue_;
+  std::atomic<uint32_t> block_num_{0};   // 缓存块计数器,boost::lockfree::queue不提供size接口
   ibv_mr* block_pool_mr_;
 
   std::vector<std::thread> threads_vec_;
@@ -65,6 +70,11 @@ private:
   static const int default_max_local_block;
 };
 
+inline bool SharedResource::isNeedExtendPool() {
+  return block_num_.load() <= static_cast<size_t>(0.1 * block_pool_size_ / msg_threshold)
+         && !isExtendingPool_.load();
+}
+
 inline boost::asio::io_context* SharedResource::GetIOContext() {
   int idx = ++schedule_idx_ % num_work_threads_;
   return io_ctx_vec_.at(idx).get();
@@ -76,14 +86,20 @@ inline int SharedResource::GetThreadIndex(std::thread::id th_id) {
 
 inline void SharedResource::PutOneBlockIntoGlobalPool(uint64_t& block_addr) {
   addr_queue_.push(block_addr);
+  block_num_.fetch_add(1, std::memory_order_relaxed);
 }
 
 inline void SharedResource::GetOneBlockFromGlobalPool(uint64_t& block_addr) {
+  if (isNeedExtendPool()) {
+    std::thread ext_pool_th(&SharedResource::ExtendBlockPool, this);
+    ext_pool_th.detach();
+  }
   if (!addr_queue_.pop(block_addr)) {
     LOG_INFO("## Waiting for idle blocks.");
     while (!addr_queue_.pop(block_addr)) {}
     LOG_INFO("## Has gotten an idle block.");
   }
+  block_num_.fetch_sub(1, std::memory_order_relaxed);
 }
 
 inline void SharedResource::PutOneMRIntoCache(int th_idx, ibv_mr* mr) {

@@ -49,7 +49,7 @@ void SendSmallMessage(ibv_qp* qp,
   ibv_send_wr* send_bad_wr = nullptr;
   memset(&send_wr, 0, sizeof(send_wr));
   // Set wr_id to block address.
-  send_wr.wr_id = msg_addr;
+  send_wr.wr_id = send_counter;
   send_wr.num_sge = 1;
   send_wr.sg_list = &send_sg;
   send_wr.imm_data = htonl(msg_type);
@@ -114,7 +114,7 @@ void WriteLargeMessage(ibv_qp* qp,
   ibv_send_wr* write_bad_wr = nullptr;
   memset(&write_wr, 0, sizeof(write_wr));
   // Set wr_id to MR address.
-  write_wr.wr_id = reinterpret_cast<uint64_t>(msg_mr);
+  write_wr.wr_id = send_counter;
   write_wr.num_sge = 1;
   write_wr.sg_list = &write_sg;
   write_wr.opcode = IBV_WR_RDMA_WRITE;

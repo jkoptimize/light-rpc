@@ -24,4 +24,17 @@ enum MessageType {
   FAST_NotifyMessage = 2
 };
 
+enum AddressType {
+  BLOCK_ADDRESS,
+  MR_ADDRESS
+};
+
+struct AddressInfo {
+  AddressType type;
+  uint64_t addr;
+  uint64_t send_counter;
+  AddressInfo(AddressType t, uint64_t a, uint64_t sc)
+    : type(t), addr(a), send_counter(sc) {}
+};
+
 } // namespace fast
