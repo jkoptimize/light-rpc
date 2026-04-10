@@ -7,17 +7,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_FLAGS_DEBUG "-g")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
-find_package(Protobuf CONFIG REQUIRED)
+find_package(Protobuf REQUIRED)
 find_package(Boost REQUIRED)
 
 message(STATUS "Boost ${Boost_VERSION}, Protobuf ${Protobuf_VERSION}")
-message(STATUS "Protobuf Dir: ${Protobuf_DIR}")
-include("${Protobuf_DIR}/protobuf-generate.cmake")
-include("${Protobuf_DIR}/protobuf-module.cmake")
-
 include_directories(${Boost_INCLUDE_DIRS})
 include_directories(${Protobuf_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR})
+include_directories(${PROJECT_SOURCE_DIR}/inc)
 
 protobuf_generate_cpp(IMPL_PROTO_SRCS IMPL_PROTO_HDRS proto/fast_impl.proto)
 
