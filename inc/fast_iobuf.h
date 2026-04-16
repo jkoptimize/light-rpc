@@ -16,6 +16,8 @@ namespace fast
     {
         friend class IOBufAsZeroCopyInputStream;
         friend class IOBufAsZeroCopyOutputStream;
+        friend class FastChannel;
+        friend class FastServer;
 
     public:
         static const size_t DEFAULT_BLOCK_SIZE = 8192;
@@ -28,6 +30,12 @@ namespace fast
             uint32_t length;
             Block *block;
         };
+
+        /// @brief Number of block references in this IOBuf.
+        size_t ref_num() const { return _ref_num(); }
+
+        /// @brief Get the i-th BlockRef.
+        const BlockRef& ref_at(size_t i) const { return _ref_at(i); }
 
         struct SmallView
         {

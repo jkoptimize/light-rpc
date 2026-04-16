@@ -64,32 +64,25 @@ namespace fast
   {
     uint32_t rpc_id = rpc_id_++;
 
-    // message layout: |1.total length|2.metadata length|3.metadata|4.payload|
-    uint32_t part4_len = request->ByteSizeLong();
+    // Step 1: Calculate sizes.
+    MetaDataOfRequest meta;
+    meta.set_rpc_id(rpc_id);
+    meta.set_service_name(method->service()->name());
+    meta.set_method_name(method->name());
+    uint32_t meta_len = meta.ByteSizeLong();
+    uint32_t payload_len = request->ByteSizeLong();
+    uint32_t attachment_len = request_attachment_.length();
+    meta.set_attachment_size(attachment_len);
 
-    MetaDataOfRequest part3;
-    part3.set_rpc_id(rpc_id);
-    part3.set_service_name(method->service()->name());
-    part3.set_method_name(method->name());
-    uint32_t part3_len = part3.ByteSizeLong();
+    uint32_t total_length = 2 * fixed32_bytes + meta_len + payload_len + attachment_len;
 
     LengthOfMetaData part2;
-    part2.set_metadata_len(part3_len);
+    part2.set_metadata_len(meta_len);
     CHECK(part2.ByteSizeLong() == fixed32_bytes);
 
-    uint32_t total_length = 2 * fixed32_bytes + part3_len + part4_len;
     TotalLengthOfMsg part1;
     part1.set_total_len(total_length);
     CHECK(part1.ByteSizeLong() == fixed32_bytes);
-
-    // Define the serialization function.
-    auto serialize_func = [&part1, &part2, &part3, &request, part3_len, part4_len](char *msg_buf)
-    {
-      CHECK(part1.SerializeToArray(msg_buf, fixed32_bytes));
-      CHECK(part2.SerializeToArray(msg_buf + fixed32_bytes, fixed32_bytes));
-      CHECK(part3.SerializeToArray(msg_buf + 2 * fixed32_bytes, part3_len));
-      CHECK(request->SerializeToArray(msg_buf + 2 * fixed32_bytes + part3_len, part4_len));
-    };
 
     /// NOTE: Post one recv WR for receiving response.
     uint64_t block_addr = 0;
@@ -102,33 +95,128 @@ namespace fast
 
     if (total_length <= max_inline_data)
     {
+      // Inline path: build frame into stack buffer, then send inline.
       char msg_buf[max_inline_data];
+
+      // Build frame: [|total_len|metadata_len|][meta][payload][attachment]
+      char *dst = msg_buf;
+      memcpy(dst, &total_length, fixed32_bytes);
+      dst += fixed32_bytes;
+      memcpy(dst, &meta_len, fixed32_bytes);
+      dst += fixed32_bytes;
+
+      // Serialize meta via ZeroCopyOutputStream into a temp buffer
+      char meta_buf[256];
+      CHECK(meta_len <= sizeof(meta_buf));
+      {
+        google::protobuf::io::ArrayOutputStream arr_out(meta_buf, meta_len);
+        google::protobuf::io::CodedOutputStream coded(&arr_out);
+        meta.SerializeWithCachedSizes(&coded);
+        CHECK(!coded.HadError());
+      }
+      memcpy(dst, meta_buf, meta_len);
+      dst += meta_len;
+
+      // Serialize payload
+      uint32_t remaining = max_inline_data - (dst - msg_buf);
+      CHECK(payload_len <= remaining);
+      google::protobuf::io::ArrayOutputStream arr_out(dst, remaining);
+      CHECK(request->SerializeToZeroCopyStream(&arr_out));
+      dst += payload_len;
+
+      // Append attachment
+      if (attachment_len > 0)
+      {
+        for (size_t i = 0; i < request_attachment_.ref_num(); ++i)
+        {
+          const auto &r = request_attachment_.ref_at(i);
+          memcpy(dst, r.block->data + r.offset, r.length);
+          dst += r.length;
+        }
+      }
+
       uint64_t msg_addr = reinterpret_cast<uint64_t>(msg_buf);
-      serialize_func(msg_buf);
-      SendInlineMessage(local_qp,
-                        FAST_SmallMessage,
-                        msg_addr,
-                        total_length);
+      SendInlineMessage(local_qp, FAST_SmallMessage, msg_addr, total_length);
     }
     else if (total_length <= msg_threshold)
     {
-      uint64_t msg_addr = 0;
-      unique_rsc_->ObtainOneBlock(msg_addr);
-      serialize_func(reinterpret_cast<char *>(msg_addr));
-      SendSmallMessage(local_qp,
-                       FAST_SmallMessage,
-                       msg_addr,
-                       total_length,
-                       local_key);
-      ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS, msg_addr, send_counter));
+      // Small message path: build frame into IOBuf backed by block_pool blocks,
+      // serialize header+body via IOBufAsZeroCopyOutputStream (zero-copy),
+      // then post RDMA SEND with one SGE per block.
+      IOBuf frame;
+
+      // Append fixed headers.
+      frame.append(&total_length, fixed32_bytes);
+      frame.append(&meta_len, fixed32_bytes);
+
+      // Serialize meta into IOBuf via ZeroCopyOutputStream.
+      {
+        IOBufAsZeroCopyOutputStream zcos(&frame);
+        google::protobuf::io::CodedOutputStream coded(&zcos);
+        meta.SerializeWithCachedSizes(&coded);
+        CHECK(!coded.HadError());
+      }
+
+      // Serialize payload into IOBuf via ZeroCopyOutputStream.
+      {
+        IOBufAsZeroCopyOutputStream zcos(&frame);
+        google::protobuf::io::CodedOutputStream coded(&zcos);
+        request->SerializeWithCachedSizes(&coded);
+        CHECK(!coded.HadError());
+      }
+
+      // Append attachment.
+      if (attachment_len > 0)
+      {
+        frame.append(request_attachment_);
+      }
+
+      // Post RDMA SEND: one SGE per IOBuf block.
+      ibv_sge sges[MAX_SGE];
+      int sge_count = 0;
+      for (size_t i = 0; i < frame.ref_num(); ++i)
+      {
+        const auto &r = frame.ref_at(i);
+        sges[sge_count].addr = reinterpret_cast<uint64_t>(r.block->data) + r.offset;
+        sges[sge_count].length = r.length;
+        sges[sge_count].lkey = local_key;
+        ++sge_count;
+        ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS, reinterpret_cast<uint64_t>(r.block->data) + r.offset, send_counter));
+      }
+
+      ibv_send_wr wr;
+      ibv_send_wr *bad_wr = nullptr;
+      memset(&wr, 0, sizeof(wr));
+      wr.wr_id = send_counter++;
+      wr.num_sge = sge_count;
+      wr.sg_list = sges;
+      wr.imm_data = htonl(FAST_SmallMessage);
+      wr.opcode = IBV_WR_SEND_WITH_IMM;
+#ifdef TEST_SELECTIVE_SIGNALING
+      if (send_counter % 16 == 0)
+      {
+        wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;
+      }
+      else
+      {
+        wr.send_flags = IBV_SEND_SOLICITED;
+      }
+#else
+      wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;
+#endif
+      CHECK(ibv_post_send(local_qp, &wr, &bad_wr) == 0);
     }
     else
     {
+      // Large message path.
+      // Build frame into IOBuf via IOBufAsZeroCopyOutputStream, then:
+      // - Try scatter-gather if frame fits in <= MAX_SGE blocks
+      // - Fallback: copy into large registered MR → RDMA write
+
       // Obtain one block for receiving authority message.
       uint64_t auth_addr = 0;
       unique_rsc_->ObtainOneBlock(auth_addr);
       char *auth_buf = reinterpret_cast<char *>(auth_addr);
-      // [Receiver]: set the flag byte to '0'.
       memset(auth_buf + fixed_auth_bytes, '0', 1);
 
       // Step-1: Create and send the notify message (send op).
@@ -140,46 +228,126 @@ namespace fast
       char noti_buf[max_inline_data];
       uint64_t noti_addr = reinterpret_cast<uint64_t>(noti_buf);
       CHECK(notify_msg.SerializeToArray(noti_buf, fixed_noti_bytes));
-      SendInlineMessage(local_qp,
-                        FAST_NotifyMessage,
-                        noti_addr,
-                        fixed_noti_bytes);
+      SendInlineMessage(local_qp, FAST_NotifyMessage, noti_addr, fixed_noti_bytes);
 
-      // Step-2: Prepare a large MR and perform serialization.
-      ibv_mr *large_send_mr = unique_rsc_->GetOneMRFromCache(total_length + 1);
-      if (large_send_mr == nullptr)
+      // Step-2: Build entire frame in IOBuf via ZeroCopyOutputStream.
+      IOBuf frame;
+      frame.append(&total_length, fixed32_bytes);
+      frame.append(&meta_len, fixed32_bytes);
+
+      // Serialize meta into IOBuf.
       {
-        large_send_mr = unique_rsc_->AllocAndRegisterMR(total_length + 1);
+        IOBufAsZeroCopyOutputStream zcos(&frame);
+        google::protobuf::io::CodedOutputStream coded(&zcos);
+        meta.SerializeWithCachedSizes(&coded);
+        CHECK(!coded.HadError());
       }
-      char *msg_buf = reinterpret_cast<char *>(large_send_mr->addr);
-      serialize_func(msg_buf);
-      // [Sender]: set the flag byte to '1'.
-      memset(msg_buf + total_length, '1', 1);
 
-      // Step-3: Get the authority message (busy check).
-      volatile char *flag = auth_buf + fixed_auth_bytes;
-      while (*flag != '1')
+      // Serialize payload into IOBuf.
       {
+        IOBufAsZeroCopyOutputStream zcos(&frame);
+        google::protobuf::io::CodedOutputStream coded(&zcos);
+        request->SerializeWithCachedSizes(&coded);
+        CHECK(!coded.HadError());
       }
-      AuthorityMessage authority_msg;
-      CHECK(authority_msg.ParseFromArray(auth_buf, fixed_auth_bytes));
 
-      // Step-4: Send the large message (write op).
-      WriteLargeMessage(local_qp,
-                        large_send_mr,
-                        total_length + 1,
-                        authority_msg.remote_key(),
-                        authority_msg.remote_addr());
-      ibvsend_client_addrs.push_back(AddressInfo(MR_ADDRESS, reinterpret_cast<uint64_t>(large_send_mr), send_counter));
+      // Append attachment.
+      if (attachment_len > 0)
+      {
+        frame.append(request_attachment_);
+      }
 
-      // Return the block which stores authority message
-      unique_rsc_->ReturnOneBlock(auth_addr);
+      // Step-3: Send the frame via scatter-gather or fallback.
+      if (frame.ref_num() <= (size_t)MAX_SGE)
+      {
+        // Scatter-gather: copy each IOBuf TLS block → RDMA-registered block → multi-SGE SEND.
+        ibv_sge sges[MAX_SGE];
+        int sge_count = 0;
+        for (size_t i = 0; i < frame.ref_num(); ++i)
+        {
+          const auto &r = frame.ref_at(i);
+          uint64_t rdma_block = 0;
+          unique_rsc_->ObtainOneBlock(rdma_block);
+          memcpy(reinterpret_cast<char *>(rdma_block), r.block->data + r.offset, r.length);
+          sges[sge_count].addr = rdma_block;
+          sges[sge_count].length = r.length;
+          sges[sge_count].lkey = local_key;
+          ++sge_count;
+          ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS, rdma_block, send_counter));
+        }
+
+        ibv_send_wr wr;
+        ibv_send_wr *bad_wr = nullptr;
+        memset(&wr, 0, sizeof(wr));
+        wr.wr_id = send_counter++;
+        wr.num_sge = sge_count;
+        wr.sg_list = sges;
+        wr.imm_data = htonl(FAST_SmallMessage);
+        wr.opcode = IBV_WR_SEND_WITH_IMM;
+#ifdef TEST_SELECTIVE_SIGNALING
+        if (send_counter % 16 == 0)
+        {
+          wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;
+        }
+        else
+        {
+          wr.send_flags = IBV_SEND_SOLICITED;
+        }
+#else
+        wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;
+#endif
+        CHECK(ibv_post_send(local_qp, &wr, &bad_wr) == 0);
+
+        // Wait for authority, then return auth block.
+        volatile char *flag = auth_buf + fixed_auth_bytes;
+        while (*flag != '1') { }
+        AuthorityMessage authority_msg;
+        CHECK(authority_msg.ParseFromArray(auth_buf, fixed_auth_bytes));
+        unique_rsc_->ReturnOneBlock(auth_addr);
+      }
+      else
+      {
+        // Fallback: copy frame into large MR, RDMA write.
+        ibv_mr *large_send_mr = unique_rsc_->GetOneMRFromCache(total_length + 1);
+        if (large_send_mr == nullptr)
+        {
+          large_send_mr = unique_rsc_->AllocAndRegisterMR(total_length + 1);
+        }
+        char *msg_buf = reinterpret_cast<char *>(large_send_mr->addr);
+
+        // Copy IOBuf frame into large MR.
+        char *dst = msg_buf;
+        for (size_t i = 0; i < frame.ref_num(); ++i)
+        {
+          const auto &r = frame.ref_at(i);
+          memcpy(dst, r.block->data + r.offset, r.length);
+          dst += r.length;
+        }
+        memset(msg_buf + total_length, '1', 1);  // authority flag
+
+        // Wait for authority, then RDMA write.
+        volatile char *flag = auth_buf + fixed_auth_bytes;
+        while (*flag != '1') { }
+        AuthorityMessage authority_msg;
+        CHECK(authority_msg.ParseFromArray(auth_buf, fixed_auth_bytes));
+
+        WriteLargeMessage(local_qp,
+                          large_send_mr,
+                          total_length + 1,
+                          authority_msg.remote_key(),
+                          authority_msg.remote_addr());
+        ibvsend_client_addrs.push_back(AddressInfo(MR_ADDRESS, reinterpret_cast<uint64_t>(large_send_mr), send_counter));
+      }
+      // frame goes out of scope here: TLS blocks returned to TLS free list.
     }
+
+    // NOTE: Clear attachment after use.
+    request_attachment_.clear();
 
     /// NOTE: Try to poll send CQEs.
     this->TryToPollSendWC();
 
-    auto recv_cq = unique_rsc_->GetConnMgrID()->recv_cq;
+    ibv_cq *recv_cq = unique_rsc_->GetConnMgrID()->recv_cq;
     ibv_wc recv_wc;
     memset(&recv_wc, 0, sizeof(recv_wc));
     while (true)
@@ -312,9 +480,26 @@ namespace fast
     part1.ParseFromArray(msg_buf, fixed_rep_head_bytes);
     uint32_t rpc_id = part1.rpc_id();
     uint32_t total_length = part1.total_len();
+    uint32_t attachment_size = part1.attachment_size();
 
     uint32_t payload_length = total_length - fixed_rep_head_bytes;
-    response->ParseFromArray(msg_buf + fixed_rep_head_bytes, payload_length);
+    if (attachment_size > 0)
+    {
+      payload_length -= attachment_size;
+    }
+
+    response_attachment_.clear();
+    if (attachment_size > 0)
+    {
+      const char *attachment_start = msg_buf + fixed_rep_head_bytes + payload_length;
+      response_attachment_.append(attachment_start, attachment_size);
+    }
+
+    // Parse payload via ZeroCopyInputStream.
+    IOBuf payload_iobuf;
+    payload_iobuf.append(msg_buf + fixed_rep_head_bytes, payload_length);
+    IOBufAsZeroCopyInputStream zcis(payload_iobuf);
+    CHECK(response->ParseFromZeroCopyStream(&zcis));
 
     /// NOTE: Return the occupied resources.
     if (small_msg)

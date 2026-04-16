@@ -2,15 +2,20 @@
 
 #include "inc/fast_shared.h"
 #include "inc/fast_utils.h"
+#include "inc/fast_iobuf.h"
 
 #include <google/protobuf/message.h>
 #include <google/protobuf/service.h>
+#include <boost/circular_buffer.hpp>
 
 namespace fast {
 
-enum ServiceOwnership { 
-  SERVER_OWNS_SERVICE, 
-  SERVER_DOESNT_OWN_SERVICE 
+extern thread_local uint64_t send_counter;
+extern thread_local boost::circular_buffer<AddressInfo> ibvsend_server_addrs;
+
+enum ServiceOwnership {
+  SERVER_OWNS_SERVICE,
+  SERVER_DOESNT_OWN_SERVICE
 };
 
 struct ServiceInfo {
@@ -23,19 +28,21 @@ struct CallBackArgs {
   rdma_cm_id* conn_id;
   google::protobuf::Message* request;
   google::protobuf::Message* response;
+  IOBuf request_attachment;   // attachment parsed from request
+  IOBuf response_attachment;  // attachment to send back in response
   CallBackArgs() = default;
   CallBackArgs(const CallBackArgs&) = default;
 };
 
 class FastServer {
-public:
+	public:
   FastServer(SharedResource* shared_rsc, int num_poll_th = default_num_poll_th);
   ~FastServer();
   void AddService(ServiceOwnership ownership, google::protobuf::Service* service);
   void BuildAndStart();
 
 private:
-  SharedResource* shared_rsc_; 
+  SharedResource* shared_rsc_;
 
   int num_pollers_;
   volatile std::atomic<bool> stop_flag_;
@@ -58,5 +65,5 @@ private:
 
   static const int default_num_poll_th;
 };
-  
+
 } // namespace fast

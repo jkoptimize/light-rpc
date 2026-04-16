@@ -18,6 +18,7 @@ message MetaDataOfRequest {
   uint32 rpc_id = 1;
   string service_name = 2;
   string method_name = 3;
+  uint32 attachment_size = 4;
 }
 
 // fixed notify message
@@ -36,4 +37,5 @@ message AuthorityMessage {
 message ResponseHead {
   fixed32 rpc_id = 1;
   fixed32 total_len = 2;
+  uint32 attachment_size = 3;
 }
