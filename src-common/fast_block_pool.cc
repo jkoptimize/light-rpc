@@ -14,8 +14,8 @@ namespace fast
     static const int BLOCK_SIZE_COUNT = 3; // 总计三种类型Block:8KB, 64KB, 2MB
     static const size_t BYTES_IN_MB = 1048576;
     static size_t g_block_size[BLOCK_SIZE_COUNT] = {8192, 65536, 2 * BYTES_IN_MB};
-    static RegisterCallback g_cb = NULL; // rdma内存注册callback
-    static size_t g_region_num = 0;      // 已经分配的region数量
+    static ibv_pd *g_pd = NULL;           // 全局 pd for block pool memory registration
+    static size_t g_region_num = 0;        // 已经分配的region数量
     // Forward declaration for TLS pointer
     struct IdleNode;
     // Only for default block size
@@ -112,14 +112,22 @@ namespace fast
         return mr->lkey;
     }
 
-    bool InitBlockPool(RegisterCallback cb)
+    void SetGlobalPD(ibv_pd *pd) {
+        g_pd = pd;
+    }
+
+    bool InitBlockPool()
     {
-        if (g_cb)
+        if (g_pd == NULL)
+        {
+            LOG(ERROR) << "Block pool PD not set. Call SetGlobalPD first.";
+            return false;
+        }
+        if (g_region_num > 0)
         {
             LOG(WARNING) << "Block pool has already been initialized.";
             return false;
         }
-        g_cb = cb;
         for (int i = 0; i < BLOCK_SIZE_COUNT; i++)
         {
             g_info->idle_list[i].resize(RDMA_MEMPOOL_BUCKETS, nullptr);
@@ -199,7 +207,7 @@ namespace fast
             LOG(ERROR) << "Exceed the maximum number of regions: " << RDMA_MEMPOOL_MAX_REGIONS;
             return NULL;
         }
-        uint32_t id = g_cb(region_base, region_size);
+        uint32_t id = RdmaRegisterMemory(g_pd, region_base, region_size);
         if (id == 0)
         {
             LOG(ERROR) << "Fail to register memory for block pool.";

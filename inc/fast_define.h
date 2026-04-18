@@ -12,8 +12,6 @@ extern const uint32_t fixed_noti_bytes;
 extern const uint32_t fixed_auth_bytes;
 extern const uint32_t fixed_rep_head_bytes;
 
-extern const int max_num_cache_mr;
-
 extern const int timeout_in_ms;
 extern const int listen_backlog;
 

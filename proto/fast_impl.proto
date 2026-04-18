@@ -32,6 +32,7 @@ message NotifyMessage {
 message AuthorityMessage {
   fixed32 remote_key = 1;
   fixed64 remote_addr = 2;
+  repeated fixed64 addrs = 3;  // additional block addresses for multi-block RDMA WRITE
 }
 
 message ResponseHead {

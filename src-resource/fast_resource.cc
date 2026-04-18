@@ -30,17 +30,4 @@ void FastResource::BindToLocalRNIC() {
   CHECK(cm_id_->verbs != nullptr && cm_id_->pd != nullptr);
 }
 
-ibv_mr* FastResource::AllocAndRegisterMR(uint32_t buf_size) {
-  void* buf = malloc(buf_size);
-  CHECK(buf != nullptr);
-  ibv_mr* ans_mr = ibv_reg_mr(
-    cm_id_->pd, 
-    buf, 
-    buf_size, 
-    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE
-  );
-  CHECK(ans_mr != nullptr);
-  return ans_mr;
-}
-  
 } // namespace fast

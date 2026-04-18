@@ -2,8 +2,6 @@
 
 #include "inc/fast_log.h"
 
-#include <rdma/rdma_cma.h>
-#include <list>
 #include <unordered_map>
 #include <mutex>
 #include <vector>
@@ -53,57 +51,6 @@ namespace fast
   private:
     std::mutex mtx_;
     std::unordered_map<uint32_t, vType> hashmap_;
-  };
-
-  class LocalMRCache
-  {
-  public:
-    LocalMRCache(int capacity) : capacity_(capacity), size_(0) {}
-
-    ~LocalMRCache()
-    {
-      for (auto it = mr_list_.begin(); it != mr_list_.end(); ++it)
-      {
-        void *mr_addr = (*it)->addr;
-        CHECK(ibv_dereg_mr(*it) == 0);
-        free(mr_addr);
-      }
-    }
-
-    void PushOneMRIntoCache(ibv_mr *mr)
-    {
-      mr_list_.push_front(mr);
-      if (++size_ > capacity_)
-      {
-        ibv_mr *last_mr = mr_list_.back();
-        void *last_mr_addr = last_mr->addr;
-        CHECK(ibv_dereg_mr(last_mr) == 0);
-        free(last_mr_addr);
-        mr_list_.pop_back();
-        --size_;
-      }
-    }
-
-    ibv_mr *GetOneMRFromCache(uint32_t goal_size)
-    {
-      ibv_mr *ans = nullptr;
-      for (auto it = mr_list_.begin(); it != mr_list_.end(); ++it)
-      {
-        if ((*it)->length >= goal_size)
-        {
-          ans = *it;
-          mr_list_.erase(it);
-          --size_;
-          break;
-        }
-      }
-      return ans;
-    }
-
-  private:
-    int capacity_;
-    int size_;
-    std::list<ibv_mr *> mr_list_;
   };
 
   // Forward declarations for ScopeGuard and MakeScopeGuard

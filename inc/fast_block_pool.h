@@ -9,8 +9,8 @@
 
 namespace fast
 {
-    typedef uint32_t (*RegisterCallback)(void *, size_t);
-    bool InitBlockPool(RegisterCallback cb);
+    void SetGlobalPD(ibv_pd *pd);
+    bool InitBlockPool();
     void *BlockAllocate(size_t len);
     void BlockDeallocate(void *buf);
     uint32_t GetRegionId(const void *buf);

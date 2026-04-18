@@ -39,8 +39,6 @@ const uint32_t fixed_noti_bytes = GetFixedNotiBytes();
 const uint32_t fixed_auth_bytes = GetFixedAuthBytes();
 const uint32_t fixed_rep_head_bytes = GetFixedRepHeadBytes();
 
-const int max_num_cache_mr = 5;
-
 const int timeout_in_ms = 1000;
 const int listen_backlog = 200;
 

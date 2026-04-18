@@ -9,7 +9,6 @@ class FastResource {
 public:
   FastResource(std::string local_ip, int local_port);
   virtual ~FastResource();
-  ibv_mr* AllocAndRegisterMR(uint32_t buf_size);
   virtual void CreateRDMAResource() = 0;  // pure virtual function
 
   inline rdma_cm_id* GetConnMgrID() const { return cm_id_; }

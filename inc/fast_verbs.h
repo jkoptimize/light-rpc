@@ -44,18 +44,6 @@ void WriteInlineMessage(ibv_qp* qp,
                         uint32_t remote_key,
                         uint64_t remote_addr);
 
-/// @brief Use the write operation to send a large message (generate a CQE).
-/// @param qp
-/// @param msg_mr This function sets wr_id to the MR address.
-/// @param msg_len The length of MR may be greater than the msg_len.
-/// @param remote_key
-/// @param remote_addr
-void WriteLargeMessage(ibv_qp* qp,
-                       ibv_mr* msg_mr,
-                       uint32_t msg_len,
-                       uint32_t remote_key,
-                       uint64_t remote_addr);
-
 /// @brief Post a scatter-gather RDMA SEND with immediate data.
 ///   Handles selective signaling internally.
 /// @param qp
@@ -69,13 +57,13 @@ void PostScatterGatherSend(ibv_qp* qp,
                            int sge_count,
                            MessageType msg_type);
 
-/// @brief Post a scatter-gather RDMA WRITE.
+/// @brief Post a scatter-gather RDMA WRITE (all SGEs to the same remote base address).
 ///   Handles selective signaling internally.
 /// @param qp
 /// @param sges Pointer to SGE array.
 /// @param sge_count Number of SGE entries.
 /// @param remote_key
-/// @param remote_addr
+/// @param remote_addr Base remote address for all SGEs.
 /// @note Caller is responsible for tracking wr_id / block addresses
 ///   for later resource cleanup (via ibvsend_client_addrs).
 void PostScatterGatherWrite(ibv_qp* qp,
@@ -83,5 +71,23 @@ void PostScatterGatherWrite(ibv_qp* qp,
                             int sge_count,
                             uint32_t remote_key,
                             uint64_t remote_addr);
+
+/// @brief Post N individual RDMA WRITEs, one per SGE+offset pair.
+///   Handles selective signaling internally. Each SGE is written to
+///   remote_addr[i] + offsets[i].
+/// @param qp
+/// @param sges Pointer to SGE array (local buffers).
+/// @param offsets Pointer to per-SGE remote offset array.
+/// @param sge_count Number of SGE entries.
+/// @param remote_key
+/// @param remote_addr Base remote address (added to each offset).
+/// @note Caller is responsible for tracking wr_id / block addresses
+///   for later resource cleanup (via ibvsend_client_addrs).
+void PostScatterGatherWriteWithOffsets(ibv_qp* qp,
+                                       ibv_sge* sges,
+                                       uint64_t* offsets,
+                                       int sge_count,
+                                       uint32_t remote_key,
+                                       uint64_t remote_addr);
 
 } // namespace fast
