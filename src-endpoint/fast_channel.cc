@@ -105,23 +105,18 @@ namespace fast
       memcpy(dst, &meta_len, fixed32_bytes);
       dst += fixed32_bytes;
 
-      // Serialize meta via ZeroCopyOutputStream into a temp buffer
-      char meta_buf[256];
-      CHECK(meta_len <= sizeof(meta_buf));
-      {
-        google::protobuf::io::ArrayOutputStream arr_out(meta_buf, meta_len);
-        google::protobuf::io::CodedOutputStream coded(&arr_out);
-        meta.SerializeWithCachedSizes(&coded);
-        CHECK(!coded.HadError());
-      }
-      memcpy(dst, meta_buf, meta_len);
+      // Serialize meta directly into msg_buf via CodedOutputStream.
+      google::protobuf::io::ArrayOutputStream arr_out(dst, meta_len);
+      google::protobuf::io::CodedOutputStream coded(&arr_out);
+      meta.SerializeWithCachedSizes(&coded);
+      CHECK(!coded.HadError());
       dst += meta_len;
 
       // Serialize payload
       uint32_t remaining = max_inline_data - (dst - msg_buf);
       CHECK(payload_len <= remaining);
-      google::protobuf::io::ArrayOutputStream arr_out(dst, remaining);
-      CHECK(request->SerializeToZeroCopyStream(&arr_out));
+      google::protobuf::io::ArrayOutputStream arr_out1(dst, remaining);
+      CHECK(request->SerializeToZeroCopyStream(&arr_out1));
       dst += payload_len;
 
       // Append attachment
@@ -184,27 +179,7 @@ namespace fast
         ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS, reinterpret_cast<uint64_t>(r.block->data) + r.offset, send_counter));
       }
 
-      ibv_send_wr wr;
-      ibv_send_wr *bad_wr = nullptr;
-      memset(&wr, 0, sizeof(wr));
-      wr.wr_id = send_counter++;
-      wr.num_sge = sge_count;
-      wr.sg_list = sges;
-      wr.imm_data = htonl(FAST_SmallMessage);
-      wr.opcode = IBV_WR_SEND_WITH_IMM;
-#ifdef TEST_SELECTIVE_SIGNALING
-      if (send_counter % 16 == 0)
-      {
-        wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;
-      }
-      else
-      {
-        wr.send_flags = IBV_SEND_SOLICITED;
-      }
-#else
-      wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;
-#endif
-      CHECK(ibv_post_send(local_qp, &wr, &bad_wr) == 0);
+      PostScatterGatherSend(local_qp, sges, sge_count, FAST_SmallMessage);
     }
     else
     {
@@ -276,31 +251,13 @@ namespace fast
           ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS, rdma_block, send_counter));
         }
 
-        ibv_send_wr wr;
-        ibv_send_wr *bad_wr = nullptr;
-        memset(&wr, 0, sizeof(wr));
-        wr.wr_id = send_counter++;
-        wr.num_sge = sge_count;
-        wr.sg_list = sges;
-        wr.imm_data = htonl(FAST_SmallMessage);
-        wr.opcode = IBV_WR_SEND_WITH_IMM;
-#ifdef TEST_SELECTIVE_SIGNALING
-        if (send_counter % 16 == 0)
-        {
-          wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;
-        }
-        else
-        {
-          wr.send_flags = IBV_SEND_SOLICITED;
-        }
-#else
-        wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;
-#endif
-        CHECK(ibv_post_send(local_qp, &wr, &bad_wr) == 0);
+        PostScatterGatherSend(local_qp, sges, sge_count, FAST_SmallMessage);
 
         // Wait for authority, then return auth block.
         volatile char *flag = auth_buf + fixed_auth_bytes;
-        while (*flag != '1') { }
+        while (*flag != '1')
+        {
+        }
         AuthorityMessage authority_msg;
         CHECK(authority_msg.ParseFromArray(auth_buf, fixed_auth_bytes));
         unique_rsc_->ReturnOneBlock(auth_addr);
@@ -323,11 +280,13 @@ namespace fast
           memcpy(dst, r.block->data + r.offset, r.length);
           dst += r.length;
         }
-        memset(msg_buf + total_length, '1', 1);  // authority flag
+        memset(msg_buf + total_length, '1', 1); // authority flag
 
         // Wait for authority, then RDMA write.
         volatile char *flag = auth_buf + fixed_auth_bytes;
-        while (*flag != '1') { }
+        while (*flag != '1')
+        {
+        }
         AuthorityMessage authority_msg;
         CHECK(authority_msg.ParseFromArray(auth_buf, fixed_auth_bytes));
 

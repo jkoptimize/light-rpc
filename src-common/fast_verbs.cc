@@ -152,41 +152,16 @@ namespace fast
     CHECK(ibv_post_send(qp, &write_wr, &write_bad_wr) == 0);
   }
 
-  int SendScatterGatherMessage(ibv_qp *qp,
-                               MessageType msg_type,
-                               const IOBuf &msg,
-                               uint32_t total_length,
-                               uint32_t lkey)
+  void PostScatterGatherSend(ibv_qp *qp,
+                              ibv_sge *sges,
+                              int sge_count,
+                              MessageType msg_type)
   {
-    const size_t nref = msg.ref_num();
-    if (nref == 0)
-      return 0;
-    if (nref > (size_t)MAX_SGE)
-    {
-      LOG(WARNING) << "IOBuf has " << nref << " blocks, exceeds max_sge=" << MAX_SGE;
-      return -1;
-    }
-
-    ibv_sge sges[MAX_SGE];
-    size_t sge_idx = 0;
-    for (size_t i = 0; i < nref; ++i)
-    {
-      const IOBuf::BlockRef &r = msg.ref_at(i);
-      if (r.length == 0)
-        continue;
-      sges[sge_idx].addr = reinterpret_cast<uint64_t>(r.block->data + r.offset);
-      sges[sge_idx].length = r.length;
-      sges[sge_idx].lkey = lkey;
-      ++sge_idx;
-    }
-    if (sge_idx == 0)
-      return 0;
-
     ibv_send_wr wr;
     ibv_send_wr *bad_wr = nullptr;
     memset(&wr, 0, sizeof(wr));
     wr.wr_id = send_counter++;
-    wr.num_sge = sge_idx;
+    wr.num_sge = sge_count;
     wr.sg_list = sges;
     wr.imm_data = htonl(msg_type);
     wr.opcode = IBV_WR_SEND_WITH_IMM;
@@ -197,52 +172,25 @@ namespace fast
     }
     else
     {
-      wr.send_flags = IBV_SEND_SOLICITED; // no CQE
+      wr.send_flags = IBV_SEND_SOLICITED;
     }
 #else
     wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_SOLICITED;
 #endif
     CHECK(ibv_post_send(qp, &wr, &bad_wr) == 0);
-    return sge_idx;
   }
 
-  int WriteScatterGatherMessage(ibv_qp *qp,
-                                const IOBuf &msg,
-                                uint32_t total_length,
-                                uint32_t lkey,
-                                uint32_t remote_key,
-                                uint64_t remote_addr)
+  void PostScatterGatherWrite(ibv_qp *qp,
+                               ibv_sge *sges,
+                               int sge_count,
+                               uint32_t remote_key,
+                               uint64_t remote_addr)
   {
-    const size_t nref = msg.ref_num();
-    if (nref == 0)
-      return 0;
-    if (nref > (size_t)MAX_SGE)
-    {
-      LOG(WARNING) << "IOBuf has " << nref << " blocks, exceeds max_sge=" << MAX_SGE;
-      return -1;
-    }
-
-    ibv_sge sges[MAX_SGE];
-    size_t sge_idx = 0;
-    uint32_t offset = 0;
-    for (size_t i = 0; i < nref; ++i)
-    {
-      const IOBuf::BlockRef &r = msg.ref_at(i);
-      if (r.length == 0)
-        continue;
-      sges[sge_idx].addr = reinterpret_cast<uint64_t>(r.block->data + r.offset);
-      sges[sge_idx].length = r.length;
-      sges[sge_idx].lkey = lkey;
-      ++sge_idx;
-    }
-    if (sge_idx == 0)
-      return 0;
-
     ibv_send_wr wr;
     ibv_send_wr *bad_wr = nullptr;
     memset(&wr, 0, sizeof(wr));
     wr.wr_id = send_counter++;
-    wr.num_sge = sge_idx;
+    wr.num_sge = sge_count;
     wr.sg_list = sges;
     wr.opcode = IBV_WR_RDMA_WRITE;
 #ifdef TEST_SELECTIVE_SIGNALING
@@ -252,7 +200,7 @@ namespace fast
     }
     else
     {
-      wr.send_flags = 0; // no CQE
+      wr.send_flags = 0;
     }
 #else
     wr.send_flags = IBV_SEND_SIGNALED;
@@ -260,7 +208,6 @@ namespace fast
     wr.wr.rdma.rkey = remote_key;
     wr.wr.rdma.remote_addr = remote_addr;
     CHECK(ibv_post_send(qp, &wr, &bad_wr) == 0);
-    return sge_idx;
   }
 
 } // namespace fast

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "inc/fast_define.h"
-#include "inc/fast_iobuf.h"
 
 #include <rdma/rdma_cma.h>
 
@@ -57,35 +56,32 @@ void WriteLargeMessage(ibv_qp* qp,
                        uint32_t remote_key,
                        uint64_t remote_addr);
 
-/// @brief Scatter-gather RDMA send: extract SGE list from IOBuf and post
-///   a single WR with multiple SGE entries.
+/// @brief Post a scatter-gather RDMA SEND with immediate data.
+///   Handles selective signaling internally.
 /// @param qp
-/// @param msg_type imm_data sent with the WR.
-/// @param msg The IOBuf to send. Its blocks must be in registered RDMA memory
-///   (e.g. block_pool blocks). Each BlockRef becomes one SGE entry.
-/// @param total_length Total bytes to send.
-/// @param lkey lkey of the RDMA memory region.
-/// @return Number of SGE entries used, or -1 on error.
-int SendScatterGatherMessage(ibv_qp* qp,
-                             MessageType msg_type,
-                             const IOBuf& msg,
-                             uint32_t total_length,
-                             uint32_t lkey);
+/// @param sges Pointer to SGE array.
+/// @param sge_count Number of SGE entries.
+/// @param msg_type Value written to imm_data.
+/// @note Caller is responsible for tracking wr_id / block addresses
+///   for later resource cleanup (via ibvsend_client_addrs).
+void PostScatterGatherSend(ibv_qp* qp,
+                           ibv_sge* sges,
+                           int sge_count,
+                           MessageType msg_type);
 
-/// @brief Scatter-gather RDMA write: extract SGE list from IOBuf and post
-///   a single WR with multiple SGE entries.
+/// @brief Post a scatter-gather RDMA WRITE.
+///   Handles selective signaling internally.
 /// @param qp
-/// @param msg The IOBuf to write. Its blocks must be in registered RDMA memory.
-/// @param total_length Total bytes to write.
-/// @param lkey lkey of the RDMA memory region.
+/// @param sges Pointer to SGE array.
+/// @param sge_count Number of SGE entries.
 /// @param remote_key
 /// @param remote_addr
-/// @return Number of SGE entries used, or -1 on error.
-int WriteScatterGatherMessage(ibv_qp* qp,
-                              const IOBuf& msg,
-                              uint32_t total_length,
-                              uint32_t lkey,
-                              uint32_t remote_key,
-                              uint64_t remote_addr);
+/// @note Caller is responsible for tracking wr_id / block addresses
+///   for later resource cleanup (via ibvsend_client_addrs).
+void PostScatterGatherWrite(ibv_qp* qp,
+                            ibv_sge* sges,
+                            int sge_count,
+                            uint32_t remote_key,
+                            uint64_t remote_addr);
 
 } // namespace fast
