@@ -35,7 +35,7 @@ namespace fast
         size_t ref_num() const { return _ref_num(); }
 
         /// @brief Get the i-th BlockRef.
-        const BlockRef& ref_at(size_t i) const { return _ref_at(i); }
+        const BlockRef &ref_at(size_t i) const { return _ref_at(i); }
 
         struct SmallView
         {

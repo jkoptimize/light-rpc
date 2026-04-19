@@ -5,19 +5,21 @@
 const int res_len = 64;
 std::string res_str(res_len, '#');
 
-class EchoServiceImpl : public EchoService {
- public:
+class EchoServiceImpl : public EchoService
+{
+public:
   void Echo(google::protobuf::RpcController *controller,
             const TestRequest *request,
             TestResponse *response,
-            google::protobuf::Closure *done) override {
+            google::protobuf::Closure *done) override
+  {
     response->set_response(request->request());
     // response->set_response(res_str);
     done->Run();
   }
 };
 
-int main(int argc, char* argv[])
+int main(int argc, char *argv[])
 {
   std::string local_ip;
   GetLocalIp(local_ip);

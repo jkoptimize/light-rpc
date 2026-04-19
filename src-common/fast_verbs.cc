@@ -6,7 +6,6 @@ namespace fast
 
   thread_local uint64_t send_counter = 0;
 
-
   void SendInlineMessage(ibv_qp *qp,
                          MessageType msg_type,
                          uint64_t msg_addr,
@@ -115,9 +114,9 @@ namespace fast
   }
 
   void PostScatterGatherSend(ibv_qp *qp,
-                              ibv_sge *sges,
-                              int sge_count,
-                              MessageType msg_type)
+                             ibv_sge *sges,
+                             int sge_count,
+                             MessageType msg_type)
   {
     ibv_send_wr wr;
     ibv_send_wr *bad_wr = nullptr;
@@ -143,10 +142,10 @@ namespace fast
   }
 
   void PostScatterGatherWrite(ibv_qp *qp,
-                               ibv_sge *sges,
-                               int sge_count,
-                               uint32_t remote_key,
-                               uint64_t remote_addr)
+                              ibv_sge *sges,
+                              int sge_count,
+                              uint32_t remote_key,
+                              uint64_t remote_addr)
   {
     ibv_send_wr wr;
     ibv_send_wr *bad_wr = nullptr;

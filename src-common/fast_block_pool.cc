@@ -14,8 +14,8 @@ namespace fast
     static const int BLOCK_SIZE_COUNT = 3; // 总计三种类型Block:8KB, 64KB, 2MB
     static const size_t BYTES_IN_MB = 1048576;
     static size_t g_block_size[BLOCK_SIZE_COUNT] = {8192, 65536, 2 * BYTES_IN_MB};
-    static ibv_pd *g_pd = NULL;           // 全局 pd for block pool memory registration
-    static size_t g_region_num = 0;        // 已经分配的region数量
+    static ibv_pd *g_pd = NULL;     // 全局 pd for block pool memory registration
+    static size_t g_region_num = 0; // 已经分配的region数量
     // Forward declaration for TLS pointer
     struct IdleNode;
     // Only for default block size
@@ -112,7 +112,8 @@ namespace fast
         return mr->lkey;
     }
 
-    void SetGlobalPD(ibv_pd *pd) {
+    void SetGlobalPD(ibv_pd *pd)
+    {
         g_pd = pd;
     }
 
