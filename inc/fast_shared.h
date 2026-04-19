@@ -18,7 +18,7 @@ namespace fast
                    int num_work_th = default_num_work_threads);
     virtual ~SharedResource();
 
-    void PostOneRecvRequest(uint64_t &block_addr);
+    void PostOneRecvRequest(uint64_t block_addr);
     void CreateNewQueuePair(rdma_cm_id *conn_id);
 
     boost::asio::io_context *GetIOContext();
@@ -28,12 +28,11 @@ namespace fast
 
   private:
     virtual void CreateRDMAResource() override;
-    void InitBlockPoolWithCb();
+    void InitBlockPool();
 
     int num_work_threads_;
     std::atomic<uint64_t> schedule_idx_;
 
-    ibv_mr *block_pool_mr_;
     std::vector<std::thread> threads_vec_;
     std::unordered_map<std::thread::id, int> thid_idx_map_;
     std::vector<std::unique_ptr<boost::asio::io_context>> io_ctx_vec_;
@@ -52,14 +51,9 @@ namespace fast
     return thid_idx_map_.at(th_id);
   }
 
-  inline uint32_t SharedResource::GetLocalKey() const
-  {
-    return block_pool_mr_->lkey;
-  }
-
-  inline uint32_t SharedResource::GetRemoteKey() const
-  {
-    return block_pool_mr_->rkey;
-  }
+  // Note: GetLocalKey/GetRemoteKey are deprecated for non-large-message paths.
+  // Use GetRegionId(block_addr) per block instead.
+  inline uint32_t SharedResource::GetLocalKey() const { return 0; }
+  inline uint32_t SharedResource::GetRemoteKey() const { return 0; }
 
 } // namespace fast

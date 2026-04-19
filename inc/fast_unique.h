@@ -23,10 +23,7 @@ namespace fast
 
   private:
     virtual void CreateRDMAResource() override;
-    void InitBlockPoolWithCb();
-
-    uint32_t lkey_;
-    uint32_t rkey_;
+    void InitBlockPool();
   };
 
   inline void UniqueResource::ObtainOneBlock(uint64_t &block_addr)
@@ -41,12 +38,12 @@ namespace fast
 
   inline uint32_t UniqueResource::GetLocalKey() const
   {
-    return lkey_;
+    return 0;  // unused: use GetRegionId(block_addr) instead
   }
 
   inline uint32_t UniqueResource::GetRemoteKey() const
   {
-    return rkey_;
+    return 0;  // unused: use GetRegionKeys(block_addr) instead
   }
 
 } // namespace fast

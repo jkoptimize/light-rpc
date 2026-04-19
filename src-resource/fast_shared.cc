@@ -20,7 +20,7 @@ namespace fast
         schedule_idx_(0)
   {
     CreateRDMAResource();
-    InitBlockPoolWithCb();
+    InitBlockPool();
 
     for (int i = 0; i < num_work_threads_; ++i)
     {
@@ -69,26 +69,19 @@ namespace fast
     CHECK(cm_id_->recv_cq != nullptr);
   }
 
-  void SharedResource::InitBlockPoolWithCb()
+  void SharedResource::InitBlockPool()
   {
     // Set the global PD and init the block pool (idempotent: skip if already inited).
     ::fast::SetGlobalPD(cm_id_->pd);
     ::fast::InitBlockPool();
-    // Obtain lkey/rkey from the first allocated block.
-    void *first_block = ::fast::BlockAllocate(msg_threshold);
-    block_pool_mr_ = static_cast<ibv_mr *>(malloc(sizeof(ibv_mr)));
-    block_pool_mr_->lkey = ::fast::GetRegionId(first_block);
-    block_pool_mr_->rkey = block_pool_mr_->lkey;
-    ::fast::BlockDeallocate(first_block);
   }
 
-  void SharedResource::PostOneRecvRequest(uint64_t &block_addr)
+  void SharedResource::PostOneRecvRequest(uint64_t block_addr)
   {
-    block_addr = reinterpret_cast<uint64_t>(BlockAllocate(msg_threshold));
     ibv_sge recv_sg;
     recv_sg.addr = block_addr;
     recv_sg.length = msg_threshold;
-    recv_sg.lkey = block_pool_mr_->lkey;
+    recv_sg.lkey = ::fast::GetRegionId(reinterpret_cast<void *>(block_addr));
 
     ibv_recv_wr recv_wr;
     ibv_recv_wr *recv_bad_wr = nullptr;

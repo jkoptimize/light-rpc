@@ -356,8 +356,6 @@ namespace fast
     part1.set_attachment_size(attachment_len);
     CHECK(part1.ByteSizeLong() == fixed_rep_head_bytes);
 
-    uint32_t local_key = shared_rsc_->GetLocalKey();
-
     if (total_length <= max_inline_data)
     {
       // Inline path: build frame directly in stack buffer.
@@ -429,7 +427,7 @@ namespace fast
         const auto &r = resp_frame.ref_at(i);
         sges[sge_count].addr = reinterpret_cast<uint64_t>(r.block->data) + r.offset;
         sges[sge_count].length = r.length;
-        sges[sge_count].lkey = local_key;
+        sges[sge_count].lkey = ::fast::GetRegionId(r.block->data);
         ++sge_count;
         ibvsend_server_addrs.push_back(AddressInfo(BLOCK_ADDRESS, reinterpret_cast<uint64_t>(r.block->data) + r.offset, send_counter));
       }

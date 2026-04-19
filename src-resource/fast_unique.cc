@@ -14,7 +14,7 @@ namespace fast
       : FastResource(local_ip, local_port)
   {
     CreateRDMAResource();
-    InitBlockPoolWithCb();
+    InitBlockPool();
   }
 
   UniqueResource::~UniqueResource()
@@ -32,7 +32,7 @@ namespace fast
     ibv_sge recv_sg;
     recv_sg.addr = block_addr;
     recv_sg.length = msg_threshold;
-    recv_sg.lkey = lkey_;
+    recv_sg.lkey = ::fast::GetRegionId(reinterpret_cast<void *>(block_addr));
 
     ibv_recv_wr recv_wr;
     ibv_recv_wr *recv_bad_wr = nullptr;
@@ -70,16 +70,11 @@ namespace fast
     CHECK(rdma_create_qp(cm_id_, cm_id_->pd, &qp_attr) == 0);
   }
 
-  void UniqueResource::InitBlockPoolWithCb()
+  void UniqueResource::InitBlockPool()
   {
     // Set the global PD and init the block pool (idempotent: skip if already inited).
     ::fast::SetGlobalPD(cm_id_->pd);
     ::fast::InitBlockPool();
-    // Obtain lkey/rkey from the first allocated block.
-    void *first_block = ::fast::BlockAllocate(msg_threshold);
-    lkey_ = ::fast::GetRegionId(first_block);
-    rkey_ = lkey_;
-    ::fast::BlockDeallocate(first_block);
   }
 
 } // namespace fast

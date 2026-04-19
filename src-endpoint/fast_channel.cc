@@ -175,7 +175,7 @@ namespace fast
         const auto &r = frame.ref_at(i);
         sges[sge_count].addr = reinterpret_cast<uint64_t>(r.block->data) + r.offset;
         sges[sge_count].length = r.length;
-        sges[sge_count].lkey = local_key;
+        sges[sge_count].lkey = ::fast::GetRegionId(r.block->data);
         ++sge_count;
         ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS, reinterpret_cast<uint64_t>(r.block->data) + r.offset, send_counter));
       }
@@ -247,7 +247,7 @@ namespace fast
           memcpy(reinterpret_cast<char *>(rdma_block), r.block->data + r.offset, r.length);
           sges[sge_count].addr = rdma_block;
           sges[sge_count].length = r.length;
-          sges[sge_count].lkey = local_key;
+          sges[sge_count].lkey = ::fast::GetRegionId(reinterpret_cast<void *>(rdma_block));
           ++sge_count;
           ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS, rdma_block, send_counter));
         }

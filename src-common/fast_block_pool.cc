@@ -35,7 +35,8 @@ namespace fast
         uintptr_t start;
         size_t size;
         uint32_t block_type;
-        uint32_t id; // lkey
+        uint32_t lkey;  // local key
+        uint32_t rkey;  // remote key
     };
     static std::vector<ibv_mr *> *g_mrs = NULL;        // 注册的mr
     static Region g_regions[RDMA_MEMPOOL_MAX_REGIONS]; // 全局region, 每种类型的block分配一个region, 最大支持16块region
@@ -71,7 +72,15 @@ namespace fast
         {
             return 0;
         }
-        return r->id;
+        return r->lkey;
+    }
+
+    void GetRegionKeys(const void *buf, uint32_t &lkey, uint32_t &rkey)
+    {
+        Region *r = GetRegion(buf);
+        CHECK(r != nullptr);
+        lkey = r->lkey;
+        rkey = r->rkey;
     }
 
     static inline Region *GetRegion(const void *buf)
@@ -233,7 +242,8 @@ namespace fast
         Region *region = &g_regions[g_region_num++];
         region->start = (uintptr_t)region_base;
         region->size = region_size;
-        region->id = id;
+        region->lkey = id;
+        region->rkey = id;
         region->block_type = block_type;
         for (size_t i = 0; i < RDMA_MEMPOOL_BUCKETS; ++i)
         {

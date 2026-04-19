@@ -13,7 +13,13 @@ namespace fast
     bool InitBlockPool();
     void *BlockAllocate(size_t len);
     void BlockDeallocate(void *buf);
+
+    /// @brief Get the lkey for the region containing buf.
     uint32_t GetRegionId(const void *buf);
+
+    /// @brief Get both lkey and rkey for the region containing buf.
+    void GetRegionKeys(const void *buf, uint32_t &lkey, uint32_t &rkey);
+
     size_t GetBlockSize(int type);
 }
 
