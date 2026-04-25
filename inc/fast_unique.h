@@ -18,8 +18,9 @@ namespace fast
     void PostOneRecvRequest(uint64_t &block_addr);
     void ObtainOneBlock(uint64_t &block_addr);
     void ReturnOneBlock(uint64_t &block_addr);
-    uint32_t GetLocalKey() const;
-    uint32_t GetRemoteKey() const;
+
+    ibv_mr *LargeBlockAlloc(size_t size);
+    void ReturnLargeBlock(ibv_mr *mr);
 
   private:
     virtual void CreateRDMAResource() override;
@@ -34,16 +35,6 @@ namespace fast
   inline void UniqueResource::ReturnOneBlock(uint64_t &block_addr)
   {
     BlockDeallocate(reinterpret_cast<void *>(block_addr));
-  }
-
-  inline uint32_t UniqueResource::GetLocalKey() const
-  {
-    return 0;  // unused: use GetRegionId(block_addr) instead
-  }
-
-  inline uint32_t UniqueResource::GetRemoteKey() const
-  {
-    return 0;  // unused: use GetRegionKeys(block_addr) instead
   }
 
 } // namespace fast

@@ -7,8 +7,6 @@
 namespace fast
 {
 
-    constexpr int MAX_SGE = 32;
-
     /// @brief Send a message using inline mode (generate a CQE).
     /// This function sets wr_id to 0.
     /// @param qp
@@ -19,18 +17,6 @@ namespace fast
                            MessageType msg_type,
                            uint64_t msg_addr,
                            uint32_t msg_len);
-
-    /// @brief Send a small message (generate a CQE).
-    /// @param qp
-    /// @param msg_type This function sets imm_data to msg_type.
-    /// @param msg_addr This function sets wr_id to msg_addr (block address).
-    /// @param msg_len
-    /// @param lkey
-    void SendSmallMessage(ibv_qp *qp,
-                          MessageType msg_type,
-                          uint64_t msg_addr,
-                          uint32_t msg_len,
-                          uint32_t lkey);
 
     /// @brief Use the write operation and inline mode to send a message (generate a CQE).
     /// This function sets wr_id to 0.
@@ -53,10 +39,10 @@ namespace fast
     /// @param msg_type Value written to imm_data.
     /// @note Caller is responsible for tracking wr_id / block addresses
     ///   for later resource cleanup (via ibvsend_client_addrs).
-    void PostScatterGatherSend(ibv_qp *qp,
-                               ibv_sge *sges,
-                               int sge_count,
-                               MessageType msg_type);
+    void SendMiddleMessage(ibv_qp *qp,
+                           ibv_sge *sges,
+                           int sge_count,
+                           MessageType msg_type);
 
     /// @brief Post a scatter-gather RDMA WRITE (all SGEs to the same remote base address).
     ///   Handles selective signaling internally.
@@ -67,28 +53,10 @@ namespace fast
     /// @param remote_addr Base remote address for all SGEs.
     /// @note Caller is responsible for tracking wr_id / block addresses
     ///   for later resource cleanup (via ibvsend_client_addrs).
-    void PostScatterGatherWrite(ibv_qp *qp,
-                                ibv_sge *sges,
-                                int sge_count,
-                                uint32_t remote_key,
-                                uint64_t remote_addr);
-
-    /// @brief Post N individual RDMA WRITEs, one per SGE+offset pair.
-    ///   Handles selective signaling internally. Each SGE is written to
-    ///   remote_addr[i] + offsets[i].
-    /// @param qp
-    /// @param sges Pointer to SGE array (local buffers).
-    /// @param offsets Pointer to per-SGE remote offset array.
-    /// @param sge_count Number of SGE entries.
-    /// @param remote_key
-    /// @param remote_addr Base remote address (added to each offset).
-    /// @note Caller is responsible for tracking wr_id / block addresses
-    ///   for later resource cleanup (via ibvsend_client_addrs).
-    void PostScatterGatherWriteWithOffsets(ibv_qp *qp,
-                                           ibv_sge *sges,
-                                           uint64_t *offsets,
-                                           int sge_count,
-                                           uint32_t remote_key,
-                                           uint64_t remote_addr);
+    void WriteLargeMessage(ibv_qp *qp,
+                           ibv_sge *sges,
+                           int sge_count,
+                           uint32_t remote_key,
+                           uint64_t remote_addr);
 
 } // namespace fast

@@ -21,9 +21,7 @@ namespace fast
 
     inline void reset_block_ref(fast::IOBuf::BlockRef &ref)
     {
-        ref.offset = 0;
-        ref.length = 0;
-        ref.block = NULL;
+        ref = {};
     }
 
     inline IOBuf::IOBuf()

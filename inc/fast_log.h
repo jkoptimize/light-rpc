@@ -35,7 +35,6 @@ namespace fast
   enum LogLevel
   {
     INFO,
-    WARNING,
     ERROR,
     FATAL
   };
@@ -48,10 +47,6 @@ namespace fast
     ~LogMessage()
     {
       std::cerr << stream_.str() << std::endl;
-      // if (level_ == FATAL)
-      // {
-      //   std::abort(); // 或 exit(EXIT_FAILURE)
-      // }
     }
 
     // 模板化的 operator<<，支持任意类型，实现流式拼接

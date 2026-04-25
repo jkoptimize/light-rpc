@@ -2,9 +2,6 @@
 #include "build/test.pb.h"
 #include "test/utils.h"
 
-const int res_len = 64;
-std::string res_str(res_len, '#');
-
 class EchoServiceImpl : public EchoService
 {
 public:
@@ -14,7 +11,6 @@ public:
             google::protobuf::Closure *done) override
   {
     response->set_response(request->request());
-    // response->set_response(res_str);
     done->Run();
   }
 };

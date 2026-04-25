@@ -35,8 +35,8 @@ namespace fast
         uintptr_t start;
         size_t size;
         uint32_t block_type;
-        uint32_t lkey;  // local key
-        uint32_t rkey;  // remote key
+        uint32_t lkey; // local key
+        uint32_t rkey; // remote key
     };
     static std::vector<ibv_mr *> *g_mrs = NULL;        // 注册的mr
     static Region g_regions[RDMA_MEMPOOL_MAX_REGIONS]; // 全局region, 每种类型的block分配一个region, 最大支持16块region
@@ -73,14 +73,6 @@ namespace fast
             return 0;
         }
         return r->lkey;
-    }
-
-    void GetRegionKeys(const void *buf, uint32_t &lkey, uint32_t &rkey)
-    {
-        Region *r = GetRegion(buf);
-        CHECK(r != nullptr);
-        lkey = r->lkey;
-        rkey = r->rkey;
     }
 
     static inline Region *GetRegion(const void *buf)
@@ -135,7 +127,7 @@ namespace fast
         }
         if (g_region_num > 0)
         {
-            LOG(WARNING) << "Block pool has already been initialized.";
+            LOG(ERROR) << "Block pool has already been initialized.";
             return false;
         }
         for (int i = 0; i < BLOCK_SIZE_COUNT; i++)
@@ -264,7 +256,7 @@ namespace fast
         {
             return NULL;
         }
-        if (len == 0 || len > g_block_size[BLOCK_SIZE_COUNT - 1])
+        if (len > g_block_size[BLOCK_SIZE_COUNT - 1])
         {
             return NULL;
         }

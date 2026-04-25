@@ -91,8 +91,7 @@ namespace fast
     unique_rsc_->PostOneRecvRequest(block_addr);
 
     ibv_qp *local_qp = unique_rsc_->GetConnMgrID()->qp;
-    uint32_t local_key = unique_rsc_->GetLocalKey();
-    uint32_t remote_key = unique_rsc_->GetRemoteKey();
+    int max_sge = unique_rsc_->max_send_sge();
 
     if (total_length <= max_inline_data)
     {
@@ -134,11 +133,9 @@ namespace fast
       uint64_t msg_addr = reinterpret_cast<uint64_t>(msg_buf);
       SendInlineMessage(local_qp, FAST_SmallMessage, msg_addr, total_length);
     }
-    else if (total_length <= msg_threshold)
+    else
     {
-      // Small message path: build frame into IOBuf backed by block_pool blocks,
-      // serialize header+body via IOBufAsZeroCopyOutputStream (zero-copy),
-      // then post RDMA SEND with one SGE per block.
+      // Non-inline path: build frame into IOBuf first, then decide by ref_num.
       IOBuf frame;
 
       // Append fixed headers.
@@ -167,188 +164,134 @@ namespace fast
         frame.append(request_attachment_);
       }
 
-      // Post RDMA SEND: one SGE per IOBuf block.
-      ibv_sge sges[MAX_SGE];
-      int sge_count = 0;
-      for (size_t i = 0; i < frame.ref_num(); ++i)
+      if ((int)frame.ref_num() <= max_sge)
       {
-        const auto &r = frame.ref_at(i);
-        sges[sge_count].addr = reinterpret_cast<uint64_t>(r.block->data) + r.offset;
-        sges[sge_count].length = r.length;
-        sges[sge_count].lkey = ::fast::GetRegionId(r.block->data);
-        ++sge_count;
-        ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS, reinterpret_cast<uint64_t>(r.block->data) + r.offset, send_counter));
-      }
-
-      PostScatterGatherSend(local_qp, sges, sge_count, FAST_SmallMessage);
-    }
-    else
-    {
-      // Large message path.
-      // Build frame into IOBuf via IOBufAsZeroCopyOutputStream, then:
-      // - Scatter-gather if frame fits in <= MAX_SGE blocks
-      // - Multi-block RDMA WRITE via PostScatterGatherWriteWithOffsets
-
-      // Obtain one block for receiving authority message.
-      uint64_t auth_addr = 0;
-      unique_rsc_->ObtainOneBlock(auth_addr);
-      char *auth_buf = reinterpret_cast<char *>(auth_addr);
-      memset(auth_buf + fixed_auth_bytes, '0', 1);
-
-      // Step-1: Create and send the notify message (send op).
-      NotifyMessage notify_msg;
-      notify_msg.set_total_len(total_length);
-      notify_msg.set_remote_key(remote_key);
-      notify_msg.set_remote_addr(auth_addr);
-      CHECK(notify_msg.ByteSizeLong() == fixed_noti_bytes);
-      char noti_buf[max_inline_data];
-      uint64_t noti_addr = reinterpret_cast<uint64_t>(noti_buf);
-      CHECK(notify_msg.SerializeToArray(noti_buf, fixed_noti_bytes));
-      SendInlineMessage(local_qp, FAST_NotifyMessage, noti_addr, fixed_noti_bytes);
-
-      // Step-2: Build entire frame in IOBuf via ZeroCopyOutputStream.
-      IOBuf frame;
-      frame.append(&total_length, fixed32_bytes);
-      frame.append(&meta_len, fixed32_bytes);
-
-      // Serialize meta into IOBuf.
-      {
-        IOBufAsZeroCopyOutputStream zcos(&frame);
-        google::protobuf::io::CodedOutputStream coded(&zcos);
-        meta.SerializeWithCachedSizes(&coded);
-        CHECK(!coded.HadError());
-      }
-
-      // Serialize payload into IOBuf.
-      {
-        IOBufAsZeroCopyOutputStream zcos(&frame);
-        google::protobuf::io::CodedOutputStream coded(&zcos);
-        request->SerializeWithCachedSizes(&coded);
-        CHECK(!coded.HadError());
-      }
-
-      // Append attachment.
-      if (attachment_len > 0)
-      {
-        frame.append(request_attachment_);
-      }
-
-      // Step-3: Send the frame via scatter-gather or fallback.
-      if (frame.ref_num() <= (size_t)MAX_SGE)
-      {
-        // Scatter-gather: copy each IOBuf TLS block → RDMA-registered block → multi-SGE SEND.
+        // Medium message: one SGE per IOBuf block.
         ibv_sge sges[MAX_SGE];
         int sge_count = 0;
         for (size_t i = 0; i < frame.ref_num(); ++i)
         {
           const auto &r = frame.ref_at(i);
-          uint64_t rdma_block = 0;
-          unique_rsc_->ObtainOneBlock(rdma_block);
-          memcpy(reinterpret_cast<char *>(rdma_block), r.block->data + r.offset, r.length);
-          sges[sge_count].addr = rdma_block;
+          sges[sge_count].addr = reinterpret_cast<uint64_t>(r.block->data) + r.offset;
           sges[sge_count].length = r.length;
-          sges[sge_count].lkey = ::fast::GetRegionId(reinterpret_cast<void *>(rdma_block));
+          sges[sge_count].lkey = ::fast::GetRegionId(r.block->data);
           ++sge_count;
-          ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS, rdma_block, send_counter));
+          ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS,
+                                                     reinterpret_cast<uint64_t>(r.block->data) + r.offset,
+                                                     reinterpret_cast<ibv_mr *>(::fast::GetRegionId(r.block->data)),
+                                                     send_counter));
         }
 
-        PostScatterGatherSend(local_qp, sges, sge_count, FAST_SmallMessage);
-
-        // Wait for authority, then return auth block.
-        volatile char *flag = auth_buf + fixed_auth_bytes;
-        while (*flag != '1')
-        {
-        }
-        AuthorityMessage authority_msg;
-        CHECK(authority_msg.ParseFromArray(auth_buf, fixed_auth_bytes));
-        unique_rsc_->ReturnOneBlock(auth_addr);
+        SendMiddleMessage(local_qp, sges, sge_count, FAST_SmallMessage);
       }
       else
       {
-        // Large message via block pool + multi RDMA WRITE:
-        // - Allocate N blocks for the frame data
-        // - Send authority with block addresses
-        // - RDMA WRITE each block to its remote address
-        size_t num_frame_blocks = frame.ref_num();
-        uint64_t *frame_blocks = new uint64_t[num_frame_blocks];
-        for (size_t i = 0; i < num_frame_blocks; ++i)
+        // Large message: serialize directly into registered large block.
+        ibv_mr *large_block_mr = unique_rsc_->LargeBlockAlloc(total_length + 1);
+        CHECK(large_block_mr != nullptr);
+        char *frame_buf = reinterpret_cast<char *>(large_block_mr->addr);
+
+        // Obtain one block for receiving authority message.
+        uint64_t auth_addr = 0;
+        unique_rsc_->ObtainOneBlock(auth_addr);
+        char *auth_buf = reinterpret_cast<char *>(auth_addr);
+        memset(auth_buf + fixed_auth_bytes, '0', 1);
+
+        // Step-1: Send the notify message (send op).
+        NotifyMessage notify_msg;
+        notify_msg.set_total_len(total_length);
+        notify_msg.set_remote_key(large_block_mr->lkey);
+        notify_msg.set_remote_addr(reinterpret_cast<uint64_t>(large_block_mr->addr));
+        CHECK(notify_msg.ByteSizeLong() == fixed_noti_bytes);
+        char noti_buf[max_inline_data];
+        CHECK(notify_msg.SerializeToArray(noti_buf, fixed_noti_bytes));
+        SendInlineMessage(local_qp, FAST_NotifyMessage,
+                          reinterpret_cast<uint64_t>(noti_buf), fixed_noti_bytes);
+
+        // Step-2: Serialize frame directly into large_block_mr->addr (zero-copy, no IOBuf).
+        char *dst = frame_buf;
+
+        memcpy(dst, &total_length, fixed32_bytes);
+        dst += fixed32_bytes;
+        memcpy(dst, &meta_len, fixed32_bytes);
+        dst += fixed32_bytes;
+
+        google::protobuf::io::ArrayOutputStream arr_out(dst, meta_len);
+        google::protobuf::io::CodedOutputStream coded(&arr_out);
+        meta.SerializeWithCachedSizes(&coded);
+        CHECK(!coded.HadError());
+        dst += meta_len;
+
+        uint32_t remaining = static_cast<uint32_t>(reinterpret_cast<char *>(large_block_mr->addr) + total_length - dst);
+        google::protobuf::io::ArrayOutputStream arr_out1(dst, remaining);
+        CHECK(request->SerializeToZeroCopyStream(&arr_out1));
+        dst += payload_len;
+
+        if (attachment_len > 0)
         {
-          unique_rsc_->ObtainOneBlock(frame_blocks[i]);
-          const auto &r = frame.ref_at(i);
-          memcpy(reinterpret_cast<char *>(frame_blocks[i]), r.block->data + r.offset, r.length);
+          memcpy(dst, request_attachment_.ref_at(0).block->data + request_attachment_.ref_at(0).offset, attachment_len);
+          dst += attachment_len;
         }
 
-        // Encode authority: [base 18-byte authority][count][addr0]...[addrN]
-        // The authority buffer already has base authority (18 bytes).
-        char *auth_buf_ext = auth_buf + fixed_auth_bytes;
-        auth_buf_ext[0] = static_cast<char>(num_frame_blocks);
-        for (size_t i = 0; i < num_frame_blocks; ++i)
-        {
-          memcpy(auth_buf_ext + 1 + i * sizeof(uint64_t), &frame_blocks[i], sizeof(uint64_t));
-        }
+        // Set flag byte to '0' (receiver will set '1' when done reading).
+        memset(frame_buf + total_length, '0', 1);
 
-        // Wait for authority, then RDMA WRITE each block.
+        // Step-3: Wait for authority message from receiver.
         volatile char *flag = auth_buf + fixed_auth_bytes;
         while (*flag != '1')
         {
         }
         AuthorityMessage authority_msg;
         CHECK(authority_msg.ParseFromArray(auth_buf, fixed_auth_bytes));
-
-        ibv_sge sges[MAX_SGE];
-        uint64_t offsets[MAX_SGE];
-        for (size_t i = 0; i < num_frame_blocks; ++i)
-        {
-          sges[i].addr = frame_blocks[i];
-          sges[i].length = frame.ref_at(i).length;
-          sges[i].lkey = local_key;
-          offsets[i] = i * msg_threshold;
-        }
-        PostScatterGatherWriteWithOffsets(local_qp, sges, offsets, num_frame_blocks,
-                                          authority_msg.remote_key(),
-                                          authority_msg.remote_addr());
-        // Track blocks AFTER posting (wr_id = send_counter at post time).
-        for (size_t i = 0; i < num_frame_blocks; ++i)
-        {
-          ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS, frame_blocks[i], send_counter));
-        }
-        delete[] frame_blocks;
         unique_rsc_->ReturnOneBlock(auth_addr);
+
+        // Step-4: RDMA WRITE the entire frame to receiver's address.
+        ibv_sge write_sg;
+        write_sg.addr = reinterpret_cast<uint64_t>(large_block_mr->addr);
+        write_sg.length = total_length;
+        write_sg.lkey = large_block_mr->lkey;
+
+        // Track for WC cleanup.
+        ibvsend_client_addrs.push_back(AddressInfo(LARGE_BLOCK_ADDRESS,
+                                                   reinterpret_cast<uint64_t>(large_block_mr->addr),
+                                                   large_block_mr, send_counter));
+        WriteLargeMessage(local_qp, &write_sg, 1,
+                          authority_msg.remote_key(),
+                          authority_msg.remote_addr());
       }
-      // frame goes out of scope here: TLS blocks returned to TLS free list.
-    }
 
-    // NOTE: Clear attachment after use.
-    request_attachment_.clear();
+      // NOTE: Clear attachment after use.
+      request_attachment_.clear();
 
-    /// NOTE: Try to poll send CQEs.
-    this->TryToPollSendWC();
+      /// NOTE: Try to poll send CQEs.
+      this->TryToPollSendWC();
 
-    ibv_cq *recv_cq = unique_rsc_->GetConnMgrID()->recv_cq;
-    ibv_wc recv_wc;
-    memset(&recv_wc, 0, sizeof(recv_wc));
-    while (true)
-    {
-      int num = ibv_poll_cq(recv_cq, 1, &recv_wc);
-      CHECK(num != -1);
-      if (num == 1)
-        break; // Just get one WC.
-    }
+      ibv_cq *recv_cq = unique_rsc_->GetConnMgrID()->recv_cq;
+      ibv_wc recv_wc;
+      memset(&recv_wc, 0, sizeof(recv_wc));
+      while (true)
+      {
+        int num = ibv_poll_cq(recv_cq, 1, &recv_wc);
+        CHECK(num != -1);
+        if (num == 1)
+          break; // Just get one WC.
+      }
 
-    CHECK(recv_wc.status == IBV_WC_SUCCESS);
-    uint32_t imm_data = ntohl(recv_wc.imm_data);
-    uint64_t recv_addr = recv_wc.wr_id;
+      CHECK(recv_wc.status == IBV_WC_SUCCESS);
+      uint32_t imm_data = ntohl(recv_wc.imm_data);
+      uint64_t recv_addr = recv_wc.wr_id;
 
-    if (imm_data == FAST_SmallMessage)
-    {
-      char *msg_buf = reinterpret_cast<char *>(recv_addr);
-      ParseAndProcessResponse(msg_buf, true, response);
-    }
-    else
-    {
-      CHECK(imm_data == FAST_NotifyMessage);
-      auto large_recv_mr = ProcessNotifyMessage(recv_addr);
-      ParseAndProcessResponse(large_recv_mr, false, response);
+      if (imm_data == FAST_SmallMessage)
+      {
+        char *msg_buf = reinterpret_cast<char *>(recv_addr);
+        ParseAndProcessResponse(msg_buf, true, response);
+      }
+      else
+      {
+        CHECK(imm_data == FAST_NotifyMessage);
+        auto large_recv_mr = ProcessNotifyMessage(recv_addr);
+        ParseAndProcessResponse(large_recv_mr, false, response);
+      }
     }
   }
 
@@ -376,7 +319,14 @@ namespace fast
     while (ibvsend_client_addrs.size() > 0 && ibvsend_client_addrs.front().send_counter == send_wc.wr_id)
     {
       AddressInfo info = ibvsend_client_addrs.front();
-      unique_rsc_->ReturnOneBlock(info.addr);
+      if (info.type == BLOCK_ADDRESS)
+      {
+        unique_rsc_->ReturnOneBlock(info.addr);
+      }
+      else
+      {
+        unique_rsc_->ReturnLargeBlock(info.mr);
+      }
       ibvsend_client_addrs.pop_front();
     }
   }
@@ -393,12 +343,9 @@ namespace fast
     unique_rsc_->ReturnOneBlock(block_addr);
     uint32_t total_length = notify_msg.total_len();
 
-    // Step-2: Allocate receive block(s) from block pool.
-    ibv_mr *recv_mr = reinterpret_cast<ibv_mr *>(malloc(sizeof(ibv_mr)));
-    recv_mr->addr = ::fast::BlockAllocate(total_length + 1);
-    CHECK(recv_mr->addr != nullptr);
-    recv_mr->lkey = ::fast::GetRegionId(recv_mr->addr);
-    recv_mr->rkey = recv_mr->lkey;
+    // Step-2: Allocate receive large block.
+    ibv_mr *recv_mr = unique_rsc_->LargeBlockAlloc(total_length + 1);
+    CHECK(recv_mr != nullptr);
     char *msg_buf = reinterpret_cast<char *>(recv_mr->addr);
     // [Receiver]: set the flag byte to '0'.
     memset(msg_buf + total_length, '0', 1);
@@ -480,8 +427,7 @@ namespace fast
     else
     {
       auto mr = reinterpret_cast<ibv_mr *>(addr);
-      ::fast::BlockDeallocate(mr->addr);
-      free(mr);
+      unique_rsc_->ReturnLargeBlock(mr);
     }
   }
 

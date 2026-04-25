@@ -101,18 +101,6 @@ int main(int argc, char *argv[])
   GetLocalIp(local_ip);
   server_ip = argv[1];
 
-  // int start_bytes = 32, max_bytes = 1024 * 1024;
-  // while (start_bytes <= max_bytes) {
-  //   Test(start_bytes, 1, 0);
-  //   start_bytes *= 2;
-  // }
-
-  // int sleep_us = 0, req_size = 256;
-  // std::vector<int> thread_num_vec = {1, 2, 4, 8, 16, 32};
-  // for (auto thread_num : thread_num_vec) {
-  //   Test(req_size, thread_num, sleep_us);
-  // }
-
   int start_bytes = 32, max_bytes = 1024 * 1024, sleep_us = 0;
   std::vector<int> thread_num_vec = {1, 2, 4, 8, 16, 32, 48};
   while (start_bytes <= max_bytes)

@@ -23,8 +23,28 @@ namespace fast
 
     boost::asio::io_context *GetIOContext();
     int GetThreadIndex(std::thread::id th_id);
-    uint32_t GetLocalKey() const;
-    uint32_t GetRemoteKey() const;
+
+    /// @brief Returns the device's max_send_sge (hardware SGE limit for scatter-gather send).
+    int max_send_sge() const { return max_send_sge_; }
+
+    /**
+     * @brief Allocate a temporarily-registered large memory block for large messages.
+     *   First searches the TLS big-block cache for a best-fit block, then falls back
+     *   to malloc + ibv_reg_mr. Allocated blocks must be returned via ReturnLargeBlock().
+     * @param size Required minimum size (bytes). Must be > 0.
+     * @return Pointer to the registered ibv_mr, or nullptr on failure.
+     * @note Caller retrieves lkey via mr->lkey.
+     */
+    ibv_mr *LargeBlockAlloc(size_t size);
+
+    /**
+     * @brief Return a large block to the TLS big-block cache or deregister if no fit.
+     * @param mr Memory region pointer returned by LargeBlockAlloc().
+     */
+    void ReturnLargeBlock(ibv_mr *mr);
+
+    void ObtainOneBlock(uint64_t &block_addr);
+    void ReturnOneBlock(uint64_t &block_addr);
 
   private:
     virtual void CreateRDMAResource() override;
@@ -51,9 +71,14 @@ namespace fast
     return thid_idx_map_.at(th_id);
   }
 
-  // Note: GetLocalKey/GetRemoteKey are deprecated for non-large-message paths.
-  // Use GetRegionId(block_addr) per block instead.
-  inline uint32_t SharedResource::GetLocalKey() const { return 0; }
-  inline uint32_t SharedResource::GetRemoteKey() const { return 0; }
+  inline void SharedResource::ObtainOneBlock(uint64_t &block_addr)
+  {
+    block_addr = reinterpret_cast<uint64_t>(BlockAllocate(msg_threshold));
+  }
+
+  inline void SharedResource::ReturnOneBlock(uint64_t &block_addr)
+  {
+    BlockDeallocate(reinterpret_cast<void *>(block_addr));
+  }
 
 } // namespace fast
