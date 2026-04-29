@@ -36,7 +36,8 @@ namespace fast
     return obj.ByteSizeLong();
   }
 
-  const uint32_t msg_threshold = 8 * 1024;
+  const uint32_t msg_threshold = 2 * 1024 * 1024;
+  const uint32_t default_msg_size = 8 * 1024;
   const uint32_t max_inline_data = 200;
 
   const uint32_t fixed32_bytes = GetFixed32Bytes();

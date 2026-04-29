@@ -16,14 +16,14 @@ namespace fast
     inline rdma_cm_id *GetConnMgrID() const { return cm_id_; }
     inline int GetLocalPort() const { return local_port_; }
     /// @brief Returns the device's max_send_sge (hardware SGE limit for scatter-gather).
-    inline int max_send_sge() const { return max_send_sge_; }
+    inline int max_send_sge() const { return max_sge_; }
 
   protected:
     // common verbs and pd
     rdma_cm_id *cm_id_;
     std::string local_ip_;
     int local_port_;
-    int max_send_sge_;
+    int max_sge_;
 
   private:
     void BindToLocalRNIC();

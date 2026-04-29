@@ -10,6 +10,7 @@ namespace fast
 
   /// @brief Boundary between inline/small and medium messages.
   ///   Used by small-message IOBuf path and recv block sizing.
+  extern const uint32_t default_msg_size;
   extern const uint32_t msg_threshold;
 
   extern const uint32_t fixed32_bytes;
@@ -39,8 +40,8 @@ namespace fast
   struct AddressInfo
   {
     AddressType type;
-    uint64_t addr;  // block addr for BLOCK_ADDRESS; mr->addr for LARGE_BLOCK_ADDRESS
-    ibv_mr *mr;     // valid for LARGE_BLOCK_ADDRESS; nullptr for BLOCK_ADDRESS
+    uint64_t addr; // block addr for BLOCK_ADDRESS; mr->addr for LARGE_BLOCK_ADDRESS
+    ibv_mr *mr;    // valid for LARGE_BLOCK_ADDRESS; nullptr for BLOCK_ADDRESS
     uint64_t send_counter;
     AddressInfo(AddressType t, uint64_t a, ibv_mr *m, uint64_t sc)
         : type(t), addr(a), mr(m), send_counter(sc) {}

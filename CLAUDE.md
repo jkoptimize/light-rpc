@@ -15,10 +15,10 @@
 | 路径 | 判断条件 | RDMA 操作 | 特点 |
 |------|----------|-----------|------|
 | Inline | `total_length <= max_inline_data` (200B) | `IBV_WR_SEND_WITH_IMM` (inline) | 零拷贝，post_send 返回即硬件接收 |
-| Medium | `frame.ref_num() <= MAX_SGE` (32) | scatter-gather SEND | 零拷贝，IOBuf scatter-gather，IOBufAsZeroCopyOutputStream |
-| Large | `frame.ref_num() > MAX_SGE` | 两阶段: SEND(NotifyMessage) + RDMA_WRITE | 单边，LargeBlockAlloc，零额外拷贝 |
+| Medium | `total_length < msg_threshold` (2MB) | scatter-gather SEND | 零拷贝，IOBuf scatter-gather，IOBufAsZeroCopyOutputStream |
+| Large | `total_length >= msg_threshold` (2MB) | 两阶段: SEND(NotifyMessage) + RDMA_WRITE | 单边，LargeBlockAlloc，零额外拷贝 |
 
-**Medium/Large 判决基于 IOBuf block ref count 而非字节数**，保证 SGE 数量不超过硬件上限。
+**消息路径判断基于 total_length（字节数），而非 IOBuf ref count 或 SGE 数量**。recv 缓冲区预分配大小为 msg_threshold (2MB)。
 
 ### 2. 大消息两阶段协议
 ```
@@ -82,22 +82,29 @@
 
 ## 关键源码位置
 - `src-endpoint/fast_server.cc` — 服务端 CQ 轮询、请求路由、ReturnRPCResponse（大消息路径）
-- `src-endpoint/fast_channel.cc` — 客户端 RPC 调用，Medium/Large 分支
-- `src-resource/fast_shared.cc` — 服务端 RDMA 资源 + LargeBlock TLS cache
-- `src-resource/fast_unique.cc` — 客户端 RDMA 资源 + LargeBlock TLS cache
+- `src-endpoint/fast_channel.cc` — 客户端 RPC 调用，Inline/Medium/Large 分支
+- `src-resource/fast_shared.cc` — 服务端 RDMA 资源 + LargeBlock TLS cache (SharedResource)
+- `src-resource/fast_unique.cc` — 客户端 RDMA 资源 + LargeBlock TLS cache (UniqueResource)
+- `src-resource/fast_resource.cc` — FastResource 基类实现
 - `src-common/fast_block_pool.cc` — RDMA 内存池
 - `src-common/fast_iobuf.cc` / `inc/fast_iobuf.h` — 零拷贝缓冲区 (IOBuf)
 - `src-common/fast_verbs.cc` — RDMA 操作封装
 - `proto/fast_impl.proto` — 内部 RPC 协议定义
 
-## 重要常量
-- `max_inline_data = 200B` — inline 阈值
-- `msg_threshold = 8KB` — Medium 路径 IOBu 阈值
-- `MAX_SGE = 32` — Medium/Large 判断基准
+## 重要常量（定义在 `inc/fast_define.h` 和 `src-common/fast_define.cc`）
+- `max_inline_data = 200B` — inline 路径阈值
+- `msg_threshold = 2MB` — Medium/Large 消息分界阈值（recv 缓冲区大小）
+- `MAX_SGE = 32` — scatter-gather 数组大小上限
 - `timeout_in_ms = 1000` — RDMA 连接超时
 - `listen_backlog = 200` — 服务端 listen backlog
 - `cq_poll_min_times = 1000` — 轮询策略阈值
 - `kMaxCachedLargeBlocks = 8` — TLS LargeBlock cache 上限
+- `RDMA_MEMPOOL_TLS_CACHE_NUM = 128` — 内存池 TLS 缓存数量
+
+## 关键结构体
+- `AddressInfo` (`inc/fast_define.h`): 保存 buffer 地址和类型，用于 WC 清理
+  - `BLOCK_ADDRESS`: 来自 BlockPool 的 block，释放用 `ReturnOneBlock`
+  - `LARGE_BLOCK_ADDRESS`: LargeBlockAlloc 的大块，释放用 `ReturnLargeBlock`
 
 ## 编码规范
 - 类名: PascalCase，以 `Fast`/`IOBuf` 开头

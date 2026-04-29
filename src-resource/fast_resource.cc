@@ -36,7 +36,7 @@ namespace fast
     // Query device to get hardware max_send_sge.
     ibv_device_attr device_attr;
     CHECK(ibv_query_device(cm_id_->verbs, &device_attr) == 0);
-    max_send_sge_ = device_attr.max_sge;
+    max_sge_ = device_attr.max_sge;
   }
 
 } // namespace fast

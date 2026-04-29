@@ -91,7 +91,6 @@ namespace fast
     unique_rsc_->PostOneRecvRequest(block_addr);
 
     ibv_qp *local_qp = unique_rsc_->GetConnMgrID()->qp;
-    int max_sge = unique_rsc_->max_send_sge();
 
     if (total_length <= max_inline_data)
     {
@@ -133,9 +132,9 @@ namespace fast
       uint64_t msg_addr = reinterpret_cast<uint64_t>(msg_buf);
       SendInlineMessage(local_qp, FAST_SmallMessage, msg_addr, total_length);
     }
-    else
+    else if (total_length < msg_threshold)
     {
-      // Non-inline path: build frame into IOBuf first, then decide by ref_num.
+      // Medium path: build frame into IOBuf, then decide by total_length.
       IOBuf frame;
 
       // Append fixed headers.
@@ -164,134 +163,132 @@ namespace fast
         frame.append(request_attachment_);
       }
 
-      if ((int)frame.ref_num() <= max_sge)
+      ibv_sge sges[MAX_SGE];
+      int sge_count = 0;
+      for (size_t i = 0; i < frame.ref_num(); ++i)
       {
-        // Medium message: one SGE per IOBuf block.
-        ibv_sge sges[MAX_SGE];
-        int sge_count = 0;
-        for (size_t i = 0; i < frame.ref_num(); ++i)
-        {
-          const auto &r = frame.ref_at(i);
-          sges[sge_count].addr = reinterpret_cast<uint64_t>(r.block->data) + r.offset;
-          sges[sge_count].length = r.length;
-          sges[sge_count].lkey = ::fast::GetRegionId(r.block->data);
-          ++sge_count;
-          ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS,
-                                                     reinterpret_cast<uint64_t>(r.block->data) + r.offset,
-                                                     reinterpret_cast<ibv_mr *>(::fast::GetRegionId(r.block->data)),
-                                                     send_counter));
-        }
-
-        SendMiddleMessage(local_qp, sges, sge_count, FAST_SmallMessage);
-      }
-      else
-      {
-        // Large message: serialize directly into registered large block.
-        ibv_mr *large_block_mr = unique_rsc_->LargeBlockAlloc(total_length + 1);
-        CHECK(large_block_mr != nullptr);
-        char *frame_buf = reinterpret_cast<char *>(large_block_mr->addr);
-
-        // Obtain one block for receiving authority message.
-        uint64_t auth_addr = 0;
-        unique_rsc_->ObtainOneBlock(auth_addr);
-        char *auth_buf = reinterpret_cast<char *>(auth_addr);
-        memset(auth_buf + fixed_auth_bytes, '0', 1);
-
-        // Step-1: Send the notify message (send op).
-        NotifyMessage notify_msg;
-        notify_msg.set_total_len(total_length);
-        notify_msg.set_remote_key(large_block_mr->lkey);
-        notify_msg.set_remote_addr(reinterpret_cast<uint64_t>(large_block_mr->addr));
-        CHECK(notify_msg.ByteSizeLong() == fixed_noti_bytes);
-        char noti_buf[max_inline_data];
-        CHECK(notify_msg.SerializeToArray(noti_buf, fixed_noti_bytes));
-        SendInlineMessage(local_qp, FAST_NotifyMessage,
-                          reinterpret_cast<uint64_t>(noti_buf), fixed_noti_bytes);
-
-        // Step-2: Serialize frame directly into large_block_mr->addr (zero-copy, no IOBuf).
-        char *dst = frame_buf;
-
-        memcpy(dst, &total_length, fixed32_bytes);
-        dst += fixed32_bytes;
-        memcpy(dst, &meta_len, fixed32_bytes);
-        dst += fixed32_bytes;
-
-        google::protobuf::io::ArrayOutputStream arr_out(dst, meta_len);
-        google::protobuf::io::CodedOutputStream coded(&arr_out);
-        meta.SerializeWithCachedSizes(&coded);
-        CHECK(!coded.HadError());
-        dst += meta_len;
-
-        uint32_t remaining = static_cast<uint32_t>(reinterpret_cast<char *>(large_block_mr->addr) + total_length - dst);
-        google::protobuf::io::ArrayOutputStream arr_out1(dst, remaining);
-        CHECK(request->SerializeToZeroCopyStream(&arr_out1));
-        dst += payload_len;
-
-        if (attachment_len > 0)
-        {
-          memcpy(dst, request_attachment_.ref_at(0).block->data + request_attachment_.ref_at(0).offset, attachment_len);
-          dst += attachment_len;
-        }
-
-        // Set flag byte to '0' (receiver will set '1' when done reading).
-        memset(frame_buf + total_length, '0', 1);
-
-        // Step-3: Wait for authority message from receiver.
-        volatile char *flag = auth_buf + fixed_auth_bytes;
-        while (*flag != '1')
-        {
-        }
-        AuthorityMessage authority_msg;
-        CHECK(authority_msg.ParseFromArray(auth_buf, fixed_auth_bytes));
-        unique_rsc_->ReturnOneBlock(auth_addr);
-
-        // Step-4: RDMA WRITE the entire frame to receiver's address.
-        ibv_sge write_sg;
-        write_sg.addr = reinterpret_cast<uint64_t>(large_block_mr->addr);
-        write_sg.length = total_length;
-        write_sg.lkey = large_block_mr->lkey;
-
-        // Track for WC cleanup.
-        ibvsend_client_addrs.push_back(AddressInfo(LARGE_BLOCK_ADDRESS,
-                                                   reinterpret_cast<uint64_t>(large_block_mr->addr),
-                                                   large_block_mr, send_counter));
-        WriteLargeMessage(local_qp, &write_sg, 1,
-                          authority_msg.remote_key(),
-                          authority_msg.remote_addr());
+        const auto &r = frame.ref_at(i);
+        sges[sge_count].addr = reinterpret_cast<uint64_t>(r.block->data) + r.offset;
+        sges[sge_count].length = r.length;
+        sges[sge_count].lkey = ::fast::GetRegionId(r.block->data);
+        ++sge_count;
+        ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS,
+                                                   reinterpret_cast<uint64_t>(r.block->data) + r.offset,
+                                                   reinterpret_cast<ibv_mr *>(::fast::GetRegionId(r.block->data)),
+                                                   send_counter));
       }
 
-      // NOTE: Clear attachment after use.
-      request_attachment_.clear();
+      SendMiddleMessage(local_qp, sges, sge_count, FAST_SmallMessage);
+    }
+    else
+    {
+      // Large message: two-phase protocol, serialize directly into large block.
+      ibv_mr *large_block_mr = unique_rsc_->LargeBlockAlloc(total_length + 1);
+      CHECK(large_block_mr != nullptr);
+      char *frame_buf = reinterpret_cast<char *>(large_block_mr->addr);
 
-      /// NOTE: Try to poll send CQEs.
-      this->TryToPollSendWC();
+      // Obtain one block for receiving authority message.
+      uint64_t auth_addr = 0;
+      unique_rsc_->ObtainOneBlock(auth_addr);
+      char *auth_buf = reinterpret_cast<char *>(auth_addr);
+      memset(auth_buf + fixed_auth_bytes, '0', 1);
 
-      ibv_cq *recv_cq = unique_rsc_->GetConnMgrID()->recv_cq;
-      ibv_wc recv_wc;
-      memset(&recv_wc, 0, sizeof(recv_wc));
-      while (true)
+      // Step-1: Send the notify message (send op).
+      NotifyMessage notify_msg;
+      notify_msg.set_total_len(total_length);
+      notify_msg.set_remote_key(large_block_mr->lkey);
+      notify_msg.set_remote_addr(reinterpret_cast<uint64_t>(large_block_mr->addr));
+      CHECK(notify_msg.ByteSizeLong() == fixed_noti_bytes);
+      char noti_buf[max_inline_data];
+      CHECK(notify_msg.SerializeToArray(noti_buf, fixed_noti_bytes));
+      SendInlineMessage(local_qp, FAST_NotifyMessage,
+                        reinterpret_cast<uint64_t>(noti_buf), fixed_noti_bytes);
+
+      // Step-2: Serialize frame directly into large_block_mr->addr (zero-copy, no IOBuf).
+      char *dst = frame_buf;
+
+      memcpy(dst, &total_length, fixed32_bytes);
+      dst += fixed32_bytes;
+      memcpy(dst, &meta_len, fixed32_bytes);
+      dst += fixed32_bytes;
+
+      google::protobuf::io::ArrayOutputStream arr_out(dst, meta_len);
+      google::protobuf::io::CodedOutputStream coded(&arr_out);
+      meta.SerializeWithCachedSizes(&coded);
+      CHECK(!coded.HadError());
+      dst += meta_len;
+
+      uint32_t remaining = static_cast<uint32_t>(reinterpret_cast<char *>(large_block_mr->addr) + total_length - dst);
+      google::protobuf::io::ArrayOutputStream arr_out1(dst, remaining);
+      google::protobuf::io::CodedOutputStream coded1(&arr_out1);
+      request->SerializeWithCachedSizes(&coded1);
+      CHECK(!coded1.HadError());
+      dst += payload_len;
+
+      if (attachment_len > 0)
       {
-        int num = ibv_poll_cq(recv_cq, 1, &recv_wc);
-        CHECK(num != -1);
-        if (num == 1)
-          break; // Just get one WC.
+        memcpy(dst, request_attachment_.ref_at(0).block->data + request_attachment_.ref_at(0).offset, attachment_len);
+        dst += attachment_len;
       }
 
-      CHECK(recv_wc.status == IBV_WC_SUCCESS);
-      uint32_t imm_data = ntohl(recv_wc.imm_data);
-      uint64_t recv_addr = recv_wc.wr_id;
+      // Set flag byte to '0' (receiver will set '1' when done reading).
+      memset(frame_buf + total_length, '0', 1);
 
-      if (imm_data == FAST_SmallMessage)
+      // Step-3: Wait for authority message from receiver.
+      volatile char *flag = auth_buf + fixed_auth_bytes;
+      while (*flag != '1')
       {
-        char *msg_buf = reinterpret_cast<char *>(recv_addr);
-        ParseAndProcessResponse(msg_buf, true, response);
       }
-      else
-      {
-        CHECK(imm_data == FAST_NotifyMessage);
-        auto large_recv_mr = ProcessNotifyMessage(recv_addr);
-        ParseAndProcessResponse(large_recv_mr, false, response);
-      }
+      AuthorityMessage authority_msg;
+      CHECK(authority_msg.ParseFromArray(auth_buf, fixed_auth_bytes));
+      unique_rsc_->ReturnOneBlock(auth_addr);
+
+      // Step-4: RDMA WRITE the entire frame to receiver's address.
+      ibv_sge write_sg;
+      write_sg.addr = reinterpret_cast<uint64_t>(large_block_mr->addr);
+      write_sg.length = total_length;
+      write_sg.lkey = large_block_mr->lkey;
+
+      // Track for WC cleanup.
+      ibvsend_client_addrs.push_back(AddressInfo(LARGE_BLOCK_ADDRESS,
+                                                 reinterpret_cast<uint64_t>(large_block_mr->addr),
+                                                 large_block_mr, send_counter));
+      WriteLargeMessage(local_qp, &write_sg, 1,
+                        authority_msg.remote_key(),
+                        authority_msg.remote_addr());
+    }
+
+    // NOTE: Clear attachment after use.
+    request_attachment_.clear();
+
+    /// NOTE: Try to poll send CQEs.
+    this->TryToPollSendWC();
+
+    ibv_cq *recv_cq = unique_rsc_->GetConnMgrID()->recv_cq;
+    ibv_wc recv_wc;
+    memset(&recv_wc, 0, sizeof(recv_wc));
+    while (true)
+    {
+      int num = ibv_poll_cq(recv_cq, 1, &recv_wc);
+      CHECK(num != -1);
+      if (num == 1)
+        break; // Just get one WC.
+    }
+
+    CHECK(recv_wc.status == IBV_WC_SUCCESS);
+    uint32_t imm_data = ntohl(recv_wc.imm_data);
+    uint64_t recv_addr = recv_wc.wr_id;
+
+    if (imm_data == FAST_SmallMessage)
+    {
+      char *msg_buf = reinterpret_cast<char *>(recv_addr);
+      ParseAndProcessResponse(msg_buf, true, response);
+    }
+    else
+    {
+      CHECK(imm_data == FAST_NotifyMessage);
+      auto large_recv_mr = ProcessNotifyMessage(recv_addr);
+      ParseAndProcessResponse(large_recv_mr, false, response);
     }
   }
 

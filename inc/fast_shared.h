@@ -24,9 +24,6 @@ namespace fast
     boost::asio::io_context *GetIOContext();
     int GetThreadIndex(std::thread::id th_id);
 
-    /// @brief Returns the device's max_send_sge (hardware SGE limit for scatter-gather send).
-    int max_send_sge() const { return max_send_sge_; }
-
     /**
      * @brief Allocate a temporarily-registered large memory block for large messages.
      *   First searches the TLS big-block cache for a best-fit block, then falls back
@@ -73,7 +70,7 @@ namespace fast
 
   inline void SharedResource::ObtainOneBlock(uint64_t &block_addr)
   {
-    block_addr = reinterpret_cast<uint64_t>(BlockAllocate(msg_threshold));
+    block_addr = reinterpret_cast<uint64_t>(BlockAllocate(default_msg_size));
   }
 
   inline void SharedResource::ReturnOneBlock(uint64_t &block_addr)

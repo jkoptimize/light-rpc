@@ -48,7 +48,7 @@ namespace fast
     ObtainOneBlock(block_addr);
     ibv_sge recv_sg;
     recv_sg.addr = block_addr;
-    recv_sg.length = msg_threshold;
+    recv_sg.length = default_msg_size;
     recv_sg.lkey = ::fast::GetRegionId(reinterpret_cast<void *>(block_addr));
 
     ibv_recv_wr recv_wr;
@@ -80,9 +80,9 @@ namespace fast
     qp_attr.recv_cq = cm_id_->recv_cq;
     qp_attr.send_cq = cm_id_->send_cq;
     qp_attr.cap.max_recv_wr = max_recv_wr;
-    qp_attr.cap.max_recv_sge = max_sge_;
+    qp_attr.cap.max_recv_sge = max_send_sge();
     qp_attr.cap.max_send_wr = max_send_wr;
-    qp_attr.cap.max_send_sge = max_sge_;
+    qp_attr.cap.max_send_sge = max_send_sge();
     qp_attr.cap.max_inline_data = max_inline_data;
     CHECK(rdma_create_qp(cm_id_, cm_id_->pd, &qp_attr) == 0);
   }
