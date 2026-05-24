@@ -1,4 +1,54 @@
-# Light-RPC 项目背景
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## 构建与测试
+
+### 依赖项
+- **RDMA**: libibverbs, librdmacm (InfiniBand/RoCE 网络支持)
+- **Boost**: Boost.Asio (异步事件循环)
+- **Protobuf**: Protocol Buffers (RPC 接口定义)
+
+### 构建命令
+```bash
+# 配置项目（首次运行）
+cd build && cmake ..
+
+# 编译（或重新编译）
+cd build && make
+
+# 构建产物
+# - libfastrpc.a: 静态库
+# - build/client: 客户端测试程序
+# - build/server: 服务端测试程序
+```
+
+### 运行测试
+```bash
+# 启动服务端（在服务端机器）
+cd build && ./server
+
+# 启动客户端（在客户端机器，传入服务端IP）
+cd build && ./client <server_ip>
+
+# 测试特点
+# - 自动测试多种消息大小：32B ~ 1MB
+# - 自动测试多种并发：1 ~ 48 线程
+# - 输出 QPS、中位延迟、P99 延迟
+```
+
+### Proto 文件生成
+```bash
+# 内部 RPC 协议（自动生成到 build/ 目录）
+proto/fast_impl.proto → build/fast_impl.pb.{h,cc}
+
+# 测试服务协议（自动生成到 build/ 目录）
+test/test.proto → build/test.pb.{h,cc}
+
+# 修改 proto 后需要重新运行 cmake && make
+```
+
+---
 
 ## 项目定位
 **light-rpc** (build 名: FAST-RPC) 是一个基于 RDMA (Remote Direct Memory Access) 的高性能 RPC 框架，目标是将 RPC 延迟降低到微秒级甚至更低。它通过 InfiniBand/RoCE 网络实现零拷贝数据传输，完全绕过内核网络栈。
@@ -18,7 +68,7 @@
 | Medium | `total_length < msg_threshold` (2MB) | scatter-gather SEND | 零拷贝，IOBuf scatter-gather，IOBufAsZeroCopyOutputStream |
 | Large | `total_length >= msg_threshold` (2MB) | 两阶段: SEND(NotifyMessage) + RDMA_WRITE | 单边，LargeBlockAlloc，零额外拷贝 |
 
-**消息路径判断基于 total_length（字节数），而非 IOBuf ref count 或 SGE 数量**。recv 缓冲区预分配大小为 msg_threshold (2MB)。
+**消息路径判断基于 total_length（字节数），而非 IOBuf ref count 或 SGE 数量**。recv 缓冲区预分配大小为 msg_threshold (8KB)。
 
 ### 2. 大消息两阶段协议
 ```
