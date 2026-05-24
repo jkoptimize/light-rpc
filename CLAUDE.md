@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 用户偏好
+- **身份**: 开发者，专注 RPC/RDMA 高性能网络
+- **语言**: 中文交流
+- **风格**: 简洁直接，不喜欢冗长总结；代码修改精准，不添加无关功能
+
 ## 构建与测试
 
 ### 依赖项
@@ -164,3 +169,42 @@ test/test.proto → build/test.pb.{h,cc}
 - 错误处理: `CHECK()` 宏，失败 exit
 - 禁止裸 `new/delete` 用于 RDMA 相关内存
 - 每次修改编码完成后必须编译通过
+
+---
+
+## 开发模式：TDD (Test-Driven Development)
+
+当前采用 TDD 模式进行功能开发，具体规范见 `spec/medium-multipart.md`。
+
+### TDD 流程
+```
+每个 Phase：
+  1. 写测试 → 编译失败（红灯）
+  2. 写最小实现 → 编译通过（绿灯）
+  3. 运行测试 → 验证通过
+  4. 重构（如需）
+  5. 提交
+```
+
+### 测试框架
+- 使用 gtest
+- 单元测试不依赖 RDMA 硬件
+- 集成测试需要 RDMA 环境（标记 `RDMA_REQUIRED`）
+
+### 当前迭代规划
+| Phase | 名称 | 文档 |
+|-------|------|------|
+| 1 | OneWayButex | [spec/phases/phase1-onewaybutex.md](spec/phases/phase1-onewaybutex.md) |
+| 2 | EventDispatcher | [spec/phases/phase2-eventdispatcher.md](spec/phases/phase2-eventdispatcher.md) |
+| 3 | RdmaEndpoint | [spec/phases/phase3-rdmaendpoint.md](spec/phases/phase3-rdmaendpoint.md) |
+| 4 | UniqueResource | [spec/phases/phase4-uniqueresource.md](spec/phases/phase4-uniqueresource.md) |
+| 5 | SharedResource | [spec/phases/phase5-sharedresource.md](spec/phases/phase5-sharedresource.md) |
+| 6 | FastChannel | [spec/phases/phase6-fastchannel.md](spec/phases/phase6-fastchannel.md) |
+| 7 | FastServer | [spec/phases/phase7-fastserver.md](spec/phases/phase7-fastserver.md) |
+
+### CMakeLists 更新规范
+每个 Phase 完成后必须：
+1. **添加新源文件**到对应的源文件列表
+2. **添加单元测试**到测试目标
+3. **编译验证**：`cd build && make`
+4. **运行测试**：`./unit_tests` 或 `ctest --output-on-failure`
