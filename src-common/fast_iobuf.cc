@@ -1020,4 +1020,12 @@ namespace fast
         return b;
     }
 
+const void* IOBuf::fetch1() const {
+    if (!empty()) {
+        const BlockRef& r0 = _front_ref();
+        return r0.block->data + r0.offset;
+    }
+    return NULL;
+}
+
 } // namespace fast

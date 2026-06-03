@@ -100,6 +100,8 @@ namespace fast
         void clear();
         bool empty() const;
         size_t length() const;
+        // Fetch pointer to first byte, NULL if empty.
+        const void* fetch1() const;
         size_t size() const { return length(); }
         bool equals(const IOBuf &other) const;
 
