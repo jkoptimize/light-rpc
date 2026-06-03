@@ -102,7 +102,6 @@ void FastRdmaEndpoint::SetNegotiatedParams(
 
 void FastRdmaEndpoint::SimulateSendOne() {
     sq_window_size_.fetch_sub(1, std::memory_order_relaxed);
-    remote_rq_window_size_.fetch_sub(1, std::memory_order_relaxed);
 }
 
 void FastRdmaEndpoint::SimulateSendN(int n) {
@@ -365,7 +364,7 @@ ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {
             }
         }
         sq_window_size_.fetch_add(wc.wr_id, std::memory_order_relaxed);
-        send_cv_.notify_one();
+        send_cv_.notify_all();
         return 0;
 
     case IBV_WC_RECV:
@@ -376,7 +375,7 @@ ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {
         if ((wc.wc_flags & IBV_WC_WITH_IMM) && wc.imm_data > 0) {
             remote_rq_window_size_.fetch_add(ntohl(wc.imm_data),
                                               std::memory_order_relaxed);
-            send_cv_.notify_one();
+            send_cv_.notify_all();
         }
         PostRecv(1, true);
         if (wc.byte_len > 0) SendAck(1);

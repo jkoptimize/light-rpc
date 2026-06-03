@@ -98,6 +98,7 @@ public:
                               uint32_t block_size);
     void SimulateSendOne();
     void SimulateSendN(int n);
+    int  TestSendAck(int num) { return SendAck(num); }
 
 private:
     int SendAck(int num);
