@@ -9,12 +9,14 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
 find_package(Protobuf REQUIRED)
 find_package(Boost REQUIRED)
+find_package(GTest REQUIRED)
 
 message(STATUS "Boost ${Boost_VERSION}, Protobuf ${Protobuf_VERSION}")
 include_directories(${Boost_INCLUDE_DIRS})
 include_directories(${Protobuf_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR})
 include_directories(${PROJECT_SOURCE_DIR}/inc)
+include_directories(${GTEST_INCLUDE_DIRS})
 
 protobuf_generate_cpp(IMPL_PROTO_SRCS IMPL_PROTO_HDRS proto/fast_impl.proto)
 
@@ -28,3 +30,8 @@ add_executable(client test/client.cc ${TEST_PROTO_SRCS})
 add_executable(server test/server.cc ${TEST_PROTO_SRCS})
 target_link_libraries(client fastrpc)
 target_link_libraries(server fastrpc)
+
+file(GLOB UNIT_TEST_SOURCES test/unit/*.cc)
+add_executable(unit_tests ${UNIT_TEST_SOURCES} ${IMPL_PROTO_SRCS})
+target_link_libraries(unit_tests fastrpc ${GTEST_LIBRARIES} pthread)
+add_test(NAME UnitTests COMMAND unit_tests)
