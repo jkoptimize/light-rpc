@@ -8,12 +8,6 @@
 
 namespace fast {
 
-// ============================================================
-// Global test flag
-// ============================================================
-
-bool g_skip_rdma_init = false;
-
 static const int RESERVED_WR_NUM = 3;
 
 // ============================================================
@@ -132,7 +126,7 @@ int FastRdmaEndpoint::SendAck(int num) {
 }
 
 int FastRdmaEndpoint::SendImm(uint32_t imm) {
-    if (imm == 0 || g_skip_rdma_init) return 0;
+    if (imm == 0) return 0;
     // TODO: ibv_post_send with IBV_WR_SEND_WITH_IMM, wr_id=0
     sq_imm_window_size_ -= 1;
     return 0;
@@ -169,8 +163,6 @@ int FastRdmaEndpoint::WriteToFd(int fd, const void* data, size_t len) {
 // ---------------------------------------------------------------------------
 
 int FastRdmaEndpoint::ProcessHandshakeAtClient(int tcp_fd) {
-    if (g_skip_rdma_init) return 0;
-
     // 1. Allocate CQ + QP
     if (AllocateResources(sq_size_, rq_size_) < 0) return -1;
 
@@ -220,8 +212,6 @@ int FastRdmaEndpoint::ProcessHandshakeAtClient(int tcp_fd) {
 }
 
 int FastRdmaEndpoint::ProcessHandshakeAtServer(int tcp_fd) {
-    if (g_skip_rdma_init) return 0;
-
     // 1. Read client HelloMessage
     uint8_t data[HelloMessage::kMsgLen];
     if (ReadFromFd(tcp_fd, data, HelloMessage::kMsgLen) < 0) return -1;
@@ -273,21 +263,17 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(int tcp_fd) {
 // RDMA resource management
 // ---------------------------------------------------------------------------
 
-int FastRdmaEndpoint::AllocateResources(uint16_t sq_size, uint16_t rq_size) {
-    if (g_skip_rdma_init) return 0;
+int FastRdmaEndpoint::AllocateResources(uint16_t /*sq_size*/, uint16_t /*rq_size*/) {
     // TODO: create comp_channel, send_cq, recv_cq, qp via ibv_* calls
-    // Requires ibv_context (pd), which must be passed or stored globally
     return 0;
 }
 
-int FastRdmaEndpoint::BringUpQp(uint16_t lid, ibv_gid gid, uint32_t remote_qpn) {
-    if (g_skip_rdma_init) return 0;
+int FastRdmaEndpoint::BringUpQp(uint16_t /*lid*/, ibv_gid /*gid*/, uint32_t /*remote_qpn*/) {
     // TODO: ibv_modify_qp RESET->INIT, INIT->RTR, RTR->RTS
     return 0;
 }
 
 void FastRdmaEndpoint::DeallocateResources() {
-    if (g_skip_rdma_init) return;
     // TODO: destroy qp, cqs, comp_channel via ibv_* calls
     sbuf_.clear();
     rbuf_.clear();
@@ -298,18 +284,13 @@ void FastRdmaEndpoint::DeallocateResources() {
 // Recv
 // ---------------------------------------------------------------------------
 
-int FastRdmaEndpoint::DoPostRecv(void* block, size_t block_size) {
-    if (g_skip_rdma_init) return 0;
+int FastRdmaEndpoint::DoPostRecv(void* /*block*/, size_t /*block_size*/) {
     // TODO: ibv_post_recv
     return 0;
 }
 
 int FastRdmaEndpoint::PostRecv(uint32_t num, bool /*zerocopy*/) {
-    if (g_skip_rdma_init) {
-        new_rq_wrs_.fetch_add(num, std::memory_order_relaxed);
-        return 0;
-    }
-    // TODO: prepare buffers and post recv WRs to RQ
+    // TODO: prepare buffers and ibv_post_recv to RQ
     new_rq_wrs_.fetch_add(num, std::memory_order_relaxed);
     return 0;
 }
@@ -318,19 +299,9 @@ int FastRdmaEndpoint::PostRecv(uint32_t num, bool /*zerocopy*/) {
 // Send
 // ---------------------------------------------------------------------------
 
-ssize_t FastRdmaEndpoint::CutFromIOBufList(IOBuf** from, size_t ndata) {
-    if (g_skip_rdma_init) {
-        for (size_t i = 0; i < ndata && from[i]; ++i) {
-            SimulateSendOne();
-        }
-        return static_cast<ssize_t>(ndata);
-    }
-    // TODO: real implementation
-    // - iterate from[0..ndata-1]
-    // - call RdmaIOBuf::cut_into_sglist_and_iobuf for each IOBuf
-    // - build ibv_send_wr with solicited/signaled flags
-    // - ibv_post_send
-    // - update sq_current_, decrement windows
+ssize_t FastRdmaEndpoint::CutFromIOBufList(IOBuf** /*from*/, size_t /*ndata*/) {
+    // TODO: iterate from[0..ndata], cut_into_sglist_and_iobuf,
+    // build ibv_send_wr, ibv_post_send, update sq_current_ and windows
     return 0;
 }
 
@@ -343,7 +314,6 @@ int FastRdmaEndpoint::comp_channel_fd() const {
 }
 
 void FastRdmaEndpoint::PollCq() {
-    if (g_skip_rdma_init) return;
     // TODO: ibv_poll_cq loop -> HandleCompletion for each WC
 }
 
