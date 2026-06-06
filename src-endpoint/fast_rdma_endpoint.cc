@@ -176,7 +176,7 @@ int FastRdmaEndpoint::ProcessHandshakeAtClient(int tcp_fd) {
 
     // 2. Send HelloMessage
     HelloMessage local;
-    local.block_size = remote_recv_block_size_ == 0 ? 8192 : remote_recv_block_size_;
+    local.block_size = g_rdma_recv_block_size;
     local.sq_size   = sq_size_;
     local.rq_size   = rq_size_;
     local.qp_num    = qp_->qp_num;
@@ -252,7 +252,7 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(int tcp_fd) {
 
     // 5. Send server HelloMessage (qp_num already available from AllocateResources)
     HelloMessage local;
-    local.block_size = remote_recv_block_size_ == 0 ? 8192 : remote_recv_block_size_;
+    local.block_size = g_rdma_recv_block_size;
     local.sq_size   = sq_size_;
     local.rq_size   = rq_size_;
     local.qp_num    = qp_ ? qp_->qp_num : 0;
