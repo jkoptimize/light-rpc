@@ -229,20 +229,7 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(int tcp_fd) {
     if (memcmp(remote.magic, "RDMA", 4) != 0) return -1;
     if (!HelloNegotiationValid(remote)) return -1;
 
-    // 2. Allocate resources
-    if (AllocateResources(sq_size_, rq_size_) < 0) return -1;
-
-    // 3. Send HelloMessage
-    HelloMessage local;
-    local.block_size = remote_recv_block_size_ == 0 ? 8192 : remote_recv_block_size_;
-    local.sq_size   = sq_size_;
-    local.rq_size   = rq_size_;
-    local.qp_num    = qp_ ? qp_->qp_num : 0;
-
-    local.Serialize(data);
-    if (WriteToFd(tcp_fd, data, HelloMessage::kMsgLen) < 0) return -1;
-
-    // 4. Set negotiated params
+    // 2. Set negotiated params from client info
     remote_recv_block_size_ = remote.block_size;
     local_window_capacity_  = std::min<int>(sq_size_, remote.rq_size) - RESERVED_WR_NUM;
     remote_window_capacity_ = std::min<int>(rq_size_, remote.sq_size) - RESERVED_WR_NUM;
@@ -250,7 +237,10 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(int tcp_fd) {
     remote_rq_window_size_.store(local_window_capacity_, std::memory_order_relaxed);
     sq_imm_window_size_ = RESERVED_WR_NUM;
 
-    // 5. Bring up QP
+    // 3. Allocate QP/CQ
+    if (AllocateResources(sq_size_, rq_size_) < 0) return -1;
+
+    // 4. Bring up QP (RESET→INIT→RTR→RTS), then QP is ready
     ibv_gid gid;
     memcpy(gid.raw, remote.gid, 16);
     if (BringUpQp(remote.lid, gid, remote.qp_num) < 0) return -1;
@@ -260,7 +250,17 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(int tcp_fd) {
     rbuf_data_.resize(rq_size_, nullptr);
     if (PostRecv(rq_size_, false) < 0) return -1;
 
-    // 6. Wait for ACK
+    // 5. Send server HelloMessage (qp_num already available from AllocateResources)
+    HelloMessage local;
+    local.block_size = remote_recv_block_size_ == 0 ? 8192 : remote_recv_block_size_;
+    local.sq_size   = sq_size_;
+    local.rq_size   = rq_size_;
+    local.qp_num    = qp_ ? qp_->qp_num : 0;
+
+    local.Serialize(data);
+    if (WriteToFd(tcp_fd, data, HelloMessage::kMsgLen) < 0) return -1;
+
+    // 6. Wait for client ACK
     uint32_t ack;
     if (ReadFromFd(tcp_fd, &ack, 4) < 0) return -1;
 
