@@ -60,7 +60,7 @@ void HelloMessage::Serialize(void* data) const {
     *pos++ = htons(sq_size);
     *pos++ = htons(rq_size);
     *pos++ = htons(lid);
-    memcpy(pos, gid, 16);
+    memcpy(pos, gid.raw, 16);
     pos += 8;
     uint32_t* qpn = reinterpret_cast<uint32_t*>(pos);
     *qpn = htonl(qp_num);
@@ -79,7 +79,7 @@ void HelloMessage::Deserialize(const void* data) {
     sq_size = ntohs(*pos++);
     rq_size = ntohs(*pos++);
     lid     = ntohs(*pos++);
-    memcpy(gid, pos, 16);
+    memcpy(gid.raw, pos, 16);
     pos += 8;
     const uint32_t* qpn = reinterpret_cast<const uint32_t*>(pos);
     qp_num = ntohl(*qpn);
@@ -215,7 +215,7 @@ int FastRdmaEndpoint::ProcessHandshakeAtClient(FastRdmaEndpoint* ep, int tcp_fd)
     local.sq_size   = ep->sq_size_;
     local.rq_size   = ep->rq_size_;
     local.lid = g_lid;
-    memcpy(local.gid, g_gid.raw, 16);
+    local.gid = g_gid;
     local.qp_num    = ep->qp_->qp_num;
 
     uint8_t data[HelloMessage::kMsgLen];
@@ -239,9 +239,7 @@ int FastRdmaEndpoint::ProcessHandshakeAtClient(FastRdmaEndpoint* ep, int tcp_fd)
     ep->sq_imm_window_size_ = RESERVED_WR_NUM;
 
     // 5. Bring up QP (RESET->INIT->RTR->RTS)
-    ibv_gid gid;
-    memcpy(gid.raw, remote.gid, 16);
-    if (ep->BringUpQp(remote.lid, gid, remote.qp_num) < 0) return -1;
+    if (ep->BringUpQp(remote.lid, remote.gid, remote.qp_num) < 0) return -1;
 
     // 6. Send ACK (RDMA_OK)
     uint32_t ack = htonl(1);
@@ -272,9 +270,7 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd)
     if (ep->AllocateResources() < 0) return -1;
 
     // 4. Bring up QP (RESET→INIT→RTR→RTS), then QP is ready
-    ibv_gid gid;
-    memcpy(gid.raw, remote.gid, 16);
-    if (ep->BringUpQp(remote.lid, gid, remote.qp_num) < 0) return -1;
+    if (ep->BringUpQp(remote.lid, remote.gid, remote.qp_num) < 0) return -1;
 
     // 5. Send server HelloMessage (qp_num already available from AllocateResources)
     HelloMessage local;
@@ -282,7 +278,7 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd)
     local.sq_size   = ep->sq_size_;
     local.rq_size   = ep->rq_size_;
     local.lid       = g_lid;
-    memcpy(local.gid, g_gid.raw, 16);
+    local.gid = g_gid;
     local.qp_num    = ep->qp_ ? ep->qp_->qp_num : 0;
 
     local.Serialize(data);

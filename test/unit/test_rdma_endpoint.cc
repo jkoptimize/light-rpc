@@ -16,7 +16,7 @@ TEST(FastRdmaEndpoint, HelloMessageSerializeDeserialize) {
     msg.sq_size    = 128;
     msg.rq_size    = 128;
     msg.lid        = 5;
-    msg.gid[0]     = 0xFE;
+    msg.gid.raw[0]     = 0xFE;
     msg.qp_num     = 42;
 
     uint8_t buf[40];
@@ -29,7 +29,7 @@ TEST(FastRdmaEndpoint, HelloMessageSerializeDeserialize) {
     EXPECT_EQ(msg2.sq_size, 128);
     EXPECT_EQ(msg2.rq_size, 128);
     EXPECT_EQ(msg2.lid, 5);
-    EXPECT_EQ(msg2.gid[0], 0xFE);
+    EXPECT_EQ(msg2.gid.raw[0], 0xFE);
     EXPECT_EQ(msg2.qp_num, 42);
     EXPECT_EQ(memcmp(msg2.magic, "RDMA", 4), 0);
 }

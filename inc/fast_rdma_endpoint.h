@@ -26,7 +26,7 @@ struct HelloMessage {
     uint16_t sq_size = 0;
     uint16_t rq_size = 0;
     uint16_t lid = 0;
-    uint8_t  gid[16] = {};
+    ibv_gid  gid = {};
     uint32_t qp_num = 0;
 
     void Serialize(void* data) const;
