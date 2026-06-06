@@ -60,6 +60,9 @@ public:
     FastRdmaEndpoint();
     ~FastRdmaEndpoint();
 
+    // ---- Global init (call once before any endpoint is created) ----
+    static void GlobalInitialize();
+
     // ============ Handshake ============
     int ProcessHandshakeAtClient(int tcp_fd);
     int ProcessHandshakeAtServer(int tcp_fd);
@@ -84,6 +87,8 @@ public:
     int comp_channel_fd() const;
 
     // ============ Test Helpers ============
+    // These exist solely for unit tests to set up flow-control state
+    // without a full handshake.  Do NOT use in production code paths.
     int sq_window_size() const {
         return sq_window_size_.load(std::memory_order_relaxed);
     }

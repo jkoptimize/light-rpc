@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 单元测试规则
+
+- **不含 RDMA 接口的纯逻辑**：可以写单元测试（如 HelloMessage 序列化、流控窗口计算、HandleCompletion SEND WC 处理）
+- **包含 RDMA 接口（ibv_post_send / ibv_poll_cq / ibv_post_recv 等）的场景**：不写单元测试
+- 生产类中只为单元测试暴露的辅助方法，必须加注释 `// For unit tests only` 说明
+
 ## 用户偏好
 - **身份**: 开发者，专注 RPC/RDMA 高性能网络
 - **语言**: 中文交流
@@ -194,13 +200,12 @@ test/test.proto → build/test.pb.{h,cc}
 ### 当前迭代规划
 | Phase | 名称 | 文档 |
 |-------|------|------|
-| 1 | OneWayButex | [spec/phases/phase1-onewaybutex.md](spec/phases/phase1-onewaybutex.md) |
+| 1 | FastRdmaEndpoint | [spec/phases/phase1-rdmaendpoint.md](spec/phases/phase1-rdmaendpoint.md) |
 | 2 | EventDispatcher | [spec/phases/phase2-eventdispatcher.md](spec/phases/phase2-eventdispatcher.md) |
-| 3 | RdmaEndpoint | [spec/phases/phase3-rdmaendpoint.md](spec/phases/phase3-rdmaendpoint.md) |
-| 4 | UniqueResource | [spec/phases/phase4-uniqueresource.md](spec/phases/phase4-uniqueresource.md) |
-| 5 | SharedResource | [spec/phases/phase5-sharedresource.md](spec/phases/phase5-sharedresource.md) |
-| 6 | FastChannel | [spec/phases/phase6-fastchannel.md](spec/phases/phase6-fastchannel.md) |
-| 7 | FastServer | [spec/phases/phase7-fastserver.md](spec/phases/phase7-fastserver.md) |
+| 3 | UniqueResource | [spec/phases/phase3-uniqueresource.md](spec/phases/phase3-uniqueresource.md) |
+| 4 | SharedResource | [spec/phases/phase4-sharedresource.md](spec/phases/phase4-sharedresource.md) |
+| 5 | FastChannel | [spec/phases/phase5-fastchannel.md](spec/phases/phase5-fastchannel.md) |
+| 6 | FastServer | [spec/phases/phase6-fastserver.md](spec/phases/phase6-fastserver.md) |
 
 ### CMakeLists 更新规范
 每个 Phase 完成后必须：

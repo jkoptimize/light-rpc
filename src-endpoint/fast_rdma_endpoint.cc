@@ -10,6 +10,14 @@ namespace fast {
 
 static const int RESERVED_WR_NUM = 3;
 
+// Global: recv block size, set once by GlobalInitialize().
+// Following brpc's default branch: GetBlockSize(0) - IOBUF_BLOCK_HEADER_LEN.
+static uint32_t g_rdma_recv_block_size = 0;
+
+void FastRdmaEndpoint::GlobalInitialize() {
+    g_rdma_recv_block_size = GetBlockSize(0) - RdmaIOBuf::IOBUF_BLOCK_HEADER_LEN;
+}
+
 // ============================================================
 // HelloMessage serialization (network byte order)
 // ============================================================
@@ -73,7 +81,7 @@ FastRdmaEndpoint::~FastRdmaEndpoint() {
 }
 
 // ---------------------------------------------------------------------------
-// Test helpers
+// Test helpers — exposed only for unit tests, see AGENTS.md / CLAUDE.md
 // ---------------------------------------------------------------------------
 
 void FastRdmaEndpoint::SetNegotiatedParams(
