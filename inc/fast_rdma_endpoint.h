@@ -68,7 +68,7 @@ public:
     static int ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd);
 
     // ============ QP Resource Management ============
-    int AllocateResources(uint16_t sq_size, uint16_t rq_size);
+    int AllocateResources();
     int BringUpQp(uint16_t lid, ibv_gid gid, uint32_t remote_qpn);
     void DeallocateResources();
 

@@ -173,7 +173,7 @@ int FastRdmaEndpoint::WriteToFd(int fd, const void* data, size_t len) {
 
 int FastRdmaEndpoint::ProcessHandshakeAtClient(FastRdmaEndpoint* ep, int tcp_fd) {
     // 1. Allocate CQ + QP
-    if (ep->AllocateResources(ep->sq_size_, ep->rq_size_) < 0) return -1;
+    if (ep->AllocateResources() < 0) return -1;
 
     // 2. Send HelloMessage
     HelloMessage local;
@@ -233,7 +233,7 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd)
     ep->sq_imm_window_size_ = RESERVED_WR_NUM;
 
     // 3. Allocate QP/CQ
-    if (ep->AllocateResources(ep->sq_size_, ep->rq_size_) < 0) return -1;
+    if (ep->AllocateResources() < 0) return -1;
 
     // 4. Bring up QP (RESET→INIT→RTR→RTS), then QP is ready
     ibv_gid gid;
@@ -261,11 +261,11 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd)
 // RDMA resource management
 // ---------------------------------------------------------------------------
 
-int FastRdmaEndpoint::AllocateResources(uint16_t sq_size, uint16_t rq_size) {
+int FastRdmaEndpoint::AllocateResources() {
     // TODO: create comp_channel, send_cq, recv_cq, qp via ibv_* calls
-    sbuf_.resize(sq_size - RESERVED_WR_NUM);
-    rbuf_.resize(rq_size);
-    rbuf_data_.resize(rq_size, nullptr);
+    sbuf_.resize(sq_size_ - RESERVED_WR_NUM);
+    rbuf_.resize(rq_size_);
+    rbuf_data_.resize(rq_size_, nullptr);
     return 0;
 }
 
