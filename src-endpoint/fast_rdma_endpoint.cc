@@ -520,41 +520,47 @@ int FastRdmaEndpoint::comp_channel_fd() const {
     return comp_channel_ ? comp_channel_->fd : -1;
 }
 
+int FastRdmaEndpoint::GetAndAckEvents() {
+    static const int MAX_CQ_EVENTS = 128;
+    int send_events = 0, recv_events = 0, total = 0;
+    while (true) {
+        ibv_cq* cq = nullptr;
+        void*   ctx = nullptr;
+        if (ibv_get_cq_event(comp_channel_, &cq, &ctx) != 0) {
+            if (errno == EAGAIN) break;
+            LOG_ERR("Fail to get cq event");
+            return -1;
+        }
+        if (cq == send_cq_)       ++send_events;
+        else if (cq == recv_cq_)  ++recv_events;
+        ++total;
+
+        if (send_events >= MAX_CQ_EVENTS) {
+            ibv_ack_cq_events(send_cq_, send_events);
+            send_events = 0;
+        }
+        if (recv_events >= MAX_CQ_EVENTS) {
+            ibv_ack_cq_events(recv_cq_, recv_events);
+            recv_events = 0;
+        }
+    }
+    if (send_events > 0) { ibv_ack_cq_events(send_cq_, send_events); }
+    if (recv_events > 0) { ibv_ack_cq_events(recv_cq_, recv_events); }
+    return total;
+}
+
 void FastRdmaEndpoint::OnCompChannelEvent(void* user_data, uint32_t /*events*/) {
     PollCq(static_cast<FastRdmaEndpoint*>(user_data));
 }
 
 void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
-    static const int MAX_CQ_EVENTS = 128;
-
-    // 1. Ack comp_channel events
-    int send_events = 0, recv_events = 0;
-    while (true) {
-        ibv_cq* cq = nullptr;
-        void*   ctx = nullptr;
-        if (ibv_get_cq_event(ep->comp_channel_, &cq, &ctx) != 0) {
-            if (errno == EAGAIN) break;
-            LOG_ERR("Fail to get cq event");
-            return;
-        }
-        if (cq == ep->send_cq_)       ++send_events;
-        else if (cq == ep->recv_cq_)  ++recv_events;
-        if (send_events >= MAX_CQ_EVENTS) {
-            ibv_ack_cq_events(ep->send_cq_, send_events);
-            send_events = 0;
-        }
-        if (recv_events >= MAX_CQ_EVENTS) {
-            ibv_ack_cq_events(ep->recv_cq_, recv_events);
-            recv_events = 0;
-        }
-    }
-    if (send_events > 0) { ibv_ack_cq_events(ep->send_cq_, send_events); }
-    if (recv_events > 0) { ibv_ack_cq_events(ep->recv_cq_, recv_events); }
+    // 1. Drain and ack comp_channel events
+    if (ep->GetAndAckEvents() < 0) return;
 
     // 2. Poll CQs — recv first, then send
     bool poll_send = false;
     ibv_cq* cq = ep->recv_cq_;
-    bool notified = false;
+    bool notified = false; // if both cq does not have events, we need to re-arm notifications for both cq
     ibv_wc wc[32];
 
     while (true) {
@@ -566,6 +572,7 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                 cq = ep->send_cq_;
                 continue;
             }
+            // `recv_cq' and `send_cq' have been polled.
             if (!notified) {
                 ibv_req_notify_cq(ep->send_cq_, 0);
                 ibv_req_notify_cq(ep->recv_cq_, 1);
@@ -573,6 +580,16 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                 // Re-poll to catch events that arrived between poll and re-arm
                 poll_send = false;
                 cq = ep->recv_cq_;
+                continue;
+            }
+
+            // Both CQs have been polled and re-armed — check for new events.
+            // GetAndAckEvents drains the comp_channel; if new events arrived
+            // between re-arm and now, restart the polling loop.
+            if (0 != ep->GetAndAckEvents()) {
+                poll_send = false;
+                cq = ep->recv_cq_;
+                notified = false;
                 continue;
             }
             break;
