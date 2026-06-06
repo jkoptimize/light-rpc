@@ -206,13 +206,7 @@ int FastRdmaEndpoint::ProcessHandshakeAtClient(int tcp_fd) {
     memcpy(gid.raw, remote.gid, 16);
     if (BringUpQp(remote.lid, gid, remote.qp_num) < 0) return -1;
 
-    // 6. Post initial recv WRs
-    sbuf_.resize(sq_size_ - RESERVED_WR_NUM);
-    rbuf_.resize(rq_size_);
-    rbuf_data_.resize(rq_size_, nullptr);
-    if (PostRecv(rq_size_, false) < 0) return -1;
-
-    // 7. Send ACK (RDMA_OK)
+    // 6. Send ACK (RDMA_OK)
     uint32_t ack = htonl(1);
     if (WriteToFd(tcp_fd, &ack, 4) < 0) return -1;
 
@@ -245,11 +239,6 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(int tcp_fd) {
     memcpy(gid.raw, remote.gid, 16);
     if (BringUpQp(remote.lid, gid, remote.qp_num) < 0) return -1;
 
-    sbuf_.resize(sq_size_ - RESERVED_WR_NUM);
-    rbuf_.resize(rq_size_);
-    rbuf_data_.resize(rq_size_, nullptr);
-    if (PostRecv(rq_size_, false) < 0) return -1;
-
     // 5. Send server HelloMessage (qp_num already available from AllocateResources)
     HelloMessage local;
     local.block_size = g_rdma_recv_block_size;
@@ -271,13 +260,19 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(int tcp_fd) {
 // RDMA resource management
 // ---------------------------------------------------------------------------
 
-int FastRdmaEndpoint::AllocateResources(uint16_t /*sq_size*/, uint16_t /*rq_size*/) {
+int FastRdmaEndpoint::AllocateResources(uint16_t sq_size, uint16_t rq_size) {
     // TODO: create comp_channel, send_cq, recv_cq, qp via ibv_* calls
+    sbuf_.resize(sq_size - RESERVED_WR_NUM);
+    rbuf_.resize(rq_size);
+    rbuf_data_.resize(rq_size, nullptr);
     return 0;
 }
 
 int FastRdmaEndpoint::BringUpQp(uint16_t /*lid*/, ibv_gid /*gid*/, uint32_t /*remote_qpn*/) {
-    // TODO: ibv_modify_qp RESET->INIT, INIT->RTR, RTR->RTS
+    // TODO: ibv_modify_qp RESET->INIT
+    // Then post initial recv WRs while QP is in INIT state:
+    if (PostRecv(rq_size_, false) < 0) return -1;
+    // TODO: ibv_modify_qp INIT->RTR, RTR->RTS
     return 0;
 }
 
