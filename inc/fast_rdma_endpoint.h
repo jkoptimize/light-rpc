@@ -78,7 +78,7 @@ public:
     void WaitForWritable();
 
     // ============ Recv & CQ (called by Poller thread) ============
-    static void PollCq();
+    static void PollCq(FastRdmaEndpoint* ep);
     ssize_t HandleCompletion(ibv_wc& wc);
     int PostRecv(uint32_t num, bool zerocopy);
 

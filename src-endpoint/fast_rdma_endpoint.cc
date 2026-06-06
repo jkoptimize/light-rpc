@@ -317,8 +317,8 @@ int FastRdmaEndpoint::comp_channel_fd() const {
     return comp_channel_ ? comp_channel_->fd : -1;
 }
 
-void FastRdmaEndpoint::PollCq() {
-    // TODO: ibv_poll_cq loop -> HandleCompletion for each WC
+void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
+    // TODO: ibv_poll_cq loop -> ep->HandleCompletion for each WC
 }
 
 ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {

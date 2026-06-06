@@ -101,7 +101,7 @@ public:
     void WaitForWritable();
 
     // ---- Recv & CQ (called by Poller thread) ----
-    static void PollCq();
+    static void PollCq(FastRdmaEndpoint* ep);
     ssize_t HandleCompletion(ibv_wc& wc);
     int PostRecv(uint32_t num, bool zerocopy);
 
@@ -517,9 +517,9 @@ ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {
 ### PollCq
 
 ```cpp
-void FastRdmaEndpoint::PollCq() {
-    // TODO: implement after EventDispatcher (Phase 2)
-    // ibv_poll_cq loop → HandleCompletion for each WC
+void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
+    // Phase 2 (EventDispatcher) 集成后实现：
+    // ibv_poll_cq loop → ep->HandleCompletion for each WC
     // re-arm notification via ibv_req_notify_cq
 }
 ```
