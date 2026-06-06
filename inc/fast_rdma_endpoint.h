@@ -79,6 +79,8 @@ public:
 
     // ============ Recv & CQ (called by Poller thread) ============
     static void PollCq(FastRdmaEndpoint* ep);
+    // EventDispatcher callback: disp.AddFd(ep->comp_channel_fd(), OnCompChannelEvent, ep)
+    static void OnCompChannelEvent(void* user_data, uint32_t events);
     ssize_t HandleCompletion(ibv_wc& wc);
     int PostRecv(uint32_t num, bool zerocopy);
 

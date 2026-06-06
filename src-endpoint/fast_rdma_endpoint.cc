@@ -520,8 +520,73 @@ int FastRdmaEndpoint::comp_channel_fd() const {
     return comp_channel_ ? comp_channel_->fd : -1;
 }
 
+void FastRdmaEndpoint::OnCompChannelEvent(void* user_data, uint32_t /*events*/) {
+    PollCq(static_cast<FastRdmaEndpoint*>(user_data));
+}
+
 void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
-    // TODO: ibv_poll_cq loop -> ep->HandleCompletion for each WC
+    static const int MAX_CQ_EVENTS = 128;
+
+    // 1. Ack comp_channel events
+    int send_events = 0, recv_events = 0;
+    while (true) {
+        ibv_cq* cq = nullptr;
+        void*   ctx = nullptr;
+        if (ibv_get_cq_event(ep->comp_channel_, &cq, &ctx) != 0) {
+            if (errno == EAGAIN) break;
+            LOG_ERR("Fail to get cq event");
+            return;
+        }
+        if (cq == ep->send_cq_)       ++send_events;
+        else if (cq == ep->recv_cq_)  ++recv_events;
+        if (send_events >= MAX_CQ_EVENTS) {
+            ibv_ack_cq_events(ep->send_cq_, send_events);
+            send_events = 0;
+        }
+        if (recv_events >= MAX_CQ_EVENTS) {
+            ibv_ack_cq_events(ep->recv_cq_, recv_events);
+            recv_events = 0;
+        }
+    }
+    if (send_events > 0) { ibv_ack_cq_events(ep->send_cq_, send_events); }
+    if (recv_events > 0) { ibv_ack_cq_events(ep->recv_cq_, recv_events); }
+
+    // 2. Poll CQs — recv first, then send
+    bool poll_send = false;
+    ibv_cq* cq = ep->recv_cq_;
+    bool notified = false;
+    ibv_wc wc[32];
+
+    while (true) {
+        int cnt = ibv_poll_cq(cq, 32, wc);
+        if (cnt < 0) return;
+        if (cnt == 0) {
+            if (!poll_send) {
+                poll_send = true;
+                cq = ep->send_cq_;
+                continue;
+            }
+            if (!notified) {
+                ibv_req_notify_cq(ep->send_cq_, 0);
+                ibv_req_notify_cq(ep->recv_cq_, 1);
+                notified = true;
+                // Re-poll to catch events that arrived between poll and re-arm
+                poll_send = false;
+                cq = ep->recv_cq_;
+                continue;
+            }
+            break;
+        }
+        notified = false;
+
+        for (int i = 0; i < cnt; ++i) {
+            if (wc[i].status != IBV_WC_SUCCESS) {
+                LOG_ERR("RDMA completion error, status=%d", wc[i].status);
+                continue;
+            }
+            ep->HandleCompletion(wc[i]);
+        }
+    }
 }
 
 ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {
