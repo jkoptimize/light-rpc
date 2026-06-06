@@ -13,7 +13,7 @@
 ## 测试目标
 
 - [ ] **AddListenFd**：fd 可读时触发回调
-- [ ] **AddCompChannel**：fd 可读时创建 poller 线程
+- [ ] **AddCompChannel**：fd 可读时调用 RdmaEndpoint::PollCq
 - [ ] **round-robin**：多 dispatcher 轮询分配
 - [ ] **RemoveCompChannel**：注销 comp_channel fd
 
@@ -149,41 +149,13 @@ TEST(EventDispatcher, RemoveCompChannel) {
 
 ---
 
-## 验收标准
-
-1. 测试全部通过
-2. 编译无警告
-3. 代码符合编码规范
-
----
-
 ## CMakeLists 更新
 
-```cmake
-# 端点层源文件添加
-set(ENDPOINT_SOURCES
-    src-endpoint/fast_channel.cc
-    src-endpoint/fast_server.cc
-    src-endpoint/event_dispatcher.cc    # 新增
-    ...
-)
-
-# 单元测试添加
-add_executable(unit_tests
-    test/unit/test_one_way_butex.cc
-    test/unit/test_event_dispatcher.cc  # 新增
-    ...
-)
-```
-
-**编译验证**：
-```bash
-cd build && make
-./unit_tests
-```
+新增源文件：`src-endpoint/event_dispatcher.cc`，修改 `src-common/fast_define.cc`
+新增测试：`test/unit/test_event_dispatcher.cc`
 
 ---
 
 ## 下一步
 
-Phase 3: RdmaEndpoint
+Phase 3: MessageDispatcher

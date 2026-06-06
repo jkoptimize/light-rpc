@@ -63,9 +63,9 @@ public:
     // ---- Global init (call once before any endpoint is created) ----
     static void GlobalInitialize();
 
-    // ============ Handshake ============
-    int ProcessHandshakeAtClient(int tcp_fd);
-    int ProcessHandshakeAtServer(int tcp_fd);
+    // ============ Handshake (static — ep passed as arg, ref brpc) ============
+    static int ProcessHandshakeAtClient(FastRdmaEndpoint* ep, int tcp_fd);
+    static int ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd);
 
     // ============ QP Resource Management ============
     int AllocateResources(uint16_t sq_size, uint16_t rq_size);
@@ -78,7 +78,7 @@ public:
     void WaitForWritable();
 
     // ============ Recv & CQ (called by Poller thread) ============
-    void PollCq();
+    static void PollCq();
     ssize_t HandleCompletion(ibv_wc& wc);
     int PostRecv(uint32_t num, bool zerocopy);
 
@@ -109,8 +109,8 @@ private:
     int SendAck(int num);
     int SendImm(uint32_t imm);
     int DoPostRecv(void* block, size_t block_size);
-    int ReadFromFd(int fd, void* data, size_t len);
-    int WriteToFd(int fd, const void* data, size_t len);
+    static int ReadFromFd(int fd, void* data, size_t len);
+    static int WriteToFd(int fd, const void* data, size_t len);
 
     // ---- RDMA resources ----
     ibv_qp*            qp_ = nullptr;
@@ -135,9 +135,13 @@ private:
     std::vector<IOBuf>  sbuf_;
     size_t              sq_current_{0};
     size_t              sq_sent_{0};
+    size_t              sq_unsignaled{0};
     std::vector<IOBuf>  rbuf_;
     std::vector<void*>  rbuf_data_;
     size_t              rq_received_{0};
+
+    // ---- ReadBuffer for incoming data ----
+    IOBuf              read_buf_;
 
     // ---- Blocking wait ----
     std::mutex              send_mutex_;

@@ -10,7 +10,7 @@
 ### 1.1 目标
 
 解决 Medium 消息（200B ~ 2MB）的两个问题：
-1. recv buffer 仅 8KB（max_sge=1），大消息装不下
+1. recv buffer 仅 8KB（max_sge=1），超过 8KB 的 Medium 消息无法一次 SEND 装载
 2. IOBuf block 数量超过 MAX_SGE=32 时 SGE 越界
 
 ### 1.2 核心原则
@@ -20,17 +20,17 @@
 | Medium 路径 | RDMA SEND/RECV 双边（非两阶段 RDMA WRITE） |
 | 无新消息类型 | 现有帧头 `[total_len][meta_len]` 足够 |
 | per-connection 顺序性 | RC 模式保序，无需追踪 rpc_id |
-| per-connection 封装 | 通过 `RdmaEndpoint` 类管理 |
+| per-connection 封装 | 通过 `FastRdmaEndpoint` 类管理 |
 | 固定配置 | sq_size = rq_size = 32，block_size = 8KB |
 | 非阻塞 EnqueueSend | io_context 线程入队即返 |
-| SQ 满时阻塞 | OneWayButex（mutex + cond） |
+| SQ 满时阻塞 | condition_variable（std::condition_variable） |
 | TDD | 每个 Phase 先写测试，后实现 |
 
 ### 1.3 架构变更
 
 | 组件 | 原设计 | 新设计 |
 |------|--------|--------|
-| QP/RQ | 共享 SRQ | per-connection 独立 |
+| QP RQ | 共享 SRQ | per-connection 独立 |
 | recv_cq | 共享 | per-connection 独立 |
 | Poller | 线程池 | EventDispatcher epoll（每 CPU 核心一个） |
 
@@ -52,7 +52,6 @@
 ```
 test/
 ├── unit/                    # 单元测试
-│   ├── test_one_way_butex.cc
 │   ├── test_event_dispatcher.cc
 │   ├── test_rdma_endpoint.cc
 │   ├── test_hello_message.cc
@@ -74,27 +73,28 @@ test/
 
 | Phase | 名称 | 文档 |
 |-------|------|------|
-| 1 | OneWayButex | [phases/phase1-onewaybutex.md](phases/phase1-onewaybutex.md) |
-| 2 | EventDispatcher | [phases/phase2-eventdispatcher.md](phases/phase2-eventdispatcher.md) |
-| 3 | RdmaEndpoint | [phases/phase3-rdmaendpoint.md](phases/phase3-rdmaendpoint.md) |
-| 4 | UniqueResource | [phases/phase4-uniqueresource.md](phases/phase4-uniqueresource.md) |
-| 5 | SharedResource | [phases/phase5-sharedresource.md](phases/phase5-sharedresource.md) |
-| 6 | FastChannel | [phases/phase6-fastchannel.md](phases/phase6-fastchannel.md) |
-| 7 | FastServer | [phases/phase7-fastserver.md](phases/phase7-fastserver.md) |
+| Phase 1 | FastRdmaEndpoint | [phases/phase1-rdmaendpoint.md](phases/phase1-rdmaendpoint.md) |
+| Phase 2 | EventDispatcher | [phases/phase2-eventdispatcher.md](phases/phase2-eventdispatcher.md) |
+| Phase 3 | MessageDispatcher | 新增 — 简化版消息分发器 |
+| Phase 4 | FastChannel | [phases/phase4-fastchannel.md](phases/phase4-fastchannel.md) |
+| Phase 5 | FastServer | [phases/phase5-fastserver.md](phases/phase5-fastserver.md) |
+
+> **注**：Phase 3/4 (UniqueResource / SharedResource) 已移至 `spec/deprecated/`，后续可能不再需要。
+> FastRdmaEndpoint 内部维护 `std::condition_variable`，KeepWrite 线程 SQ 满时阻塞于此，HandleCompletion 收到 send WC 后唤醒。
 
 ---
 
-## 四、CMakeLists 更新规范
+## 四、构建与验收
 
 每个 Phase 完成后必须：
-1. **添加新源文件**到对应的源文件列表
-2. **添加单元测试**到测试目标
-3. **编译验证**：`cd build && make`
-4. **运行测试**：`./unit_tests` 或 `ctest --output-on-failure`
+1. **添加新源文件**和**单元测试**到 CMakeLists.txt
+2. **编译验证**：`cd build && make`，无警告
+3. **运行测试**：`./unit_tests` 或 `ctest --output-on-failure`，全部通过
+4. 代码符合编码规范，文档更新（如有新增接口）
 
 ---
 
-## 四、协议定义
+## 五、协议定义
 
 ### HelloMessage (32B)
 
@@ -117,7 +117,7 @@ rdma_cm private_data（32B < 56B 上限）
 
 ---
 
-## 五、CMakeLists 配置
+## 六、CMakeLists 配置
 
 ```cmake
 # 添加 gtest 依赖
@@ -130,15 +130,14 @@ set(COMMON_SOURCES
     src-common/fast_define.cc
     src-common/fast_iobuf.cc
     src-common/fast_verbs.cc
-    src-common/one_way_butex.cc          # Phase 1
 )
 
 # 端点层源文件
 set(ENDPOINT_SOURCES
     src-endpoint/fast_channel.cc
     src-endpoint/fast_server.cc
-    src-endpoint/event_dispatcher.cc    # Phase 2
-    src-endpoint/rdma_endpoint.cc       # Phase 3
+    src-endpoint/event_dispatcher.cc
+    src-endpoint/fast_rdma_endpoint.cc
 )
 
 # 单元测试
@@ -151,7 +150,7 @@ add_test(NAME UnitTests COMMAND unit_tests)
 
 ---
 
-## 六、流控设计
+## 七、流控设计
 
 ### 窗口变量
 
@@ -165,7 +164,7 @@ add_test(NAME UnitTests COMMAND unit_tests)
 ### 窗口容量
 
 ```
-local_window_capacity = min(32, 32) - 3 = 29
+local_window_capacity = sq_size - _sq_imm_window_size = 32 - 3 = 29
 ```
 
 ### Pure ACK 触发
@@ -176,19 +175,3 @@ _sq_imm_window_size > 0 && _new_rq_wrs > 29 / 2
 
 ---
 
-## 七、编码规范（复用）
-
-- 命名：PascalCase 类、下划线变量、成员 `_` 后缀
-- 缩进：2 空格
-- 错误处理：CHECK 宏
-- 头文件：`#pragma once`
-
----
-
-## 八、验收标准
-
-每个 Phase 完成后：
-1. 单元测试全部通过
-2. 编译无警告
-3. 代码符合编码规范
-4. 文档更新（如有新增接口）

@@ -202,10 +202,11 @@ test/test.proto → build/test.pb.{h,cc}
 |-------|------|------|
 | 1 | FastRdmaEndpoint | [spec/phases/phase1-rdmaendpoint.md](spec/phases/phase1-rdmaendpoint.md) |
 | 2 | EventDispatcher | [spec/phases/phase2-eventdispatcher.md](spec/phases/phase2-eventdispatcher.md) |
-| 3 | UniqueResource | [spec/phases/phase3-uniqueresource.md](spec/phases/phase3-uniqueresource.md) |
-| 4 | SharedResource | [spec/phases/phase4-sharedresource.md](spec/phases/phase4-sharedresource.md) |
-| 5 | FastChannel | [spec/phases/phase5-fastchannel.md](spec/phases/phase5-fastchannel.md) |
-| 6 | FastServer | [spec/phases/phase6-fastserver.md](spec/phases/phase6-fastserver.md) |
+| 3 | MessageDispatcher | 新增 — 简化版消息分发器 |
+| 4 | FastChannel | [spec/phases/phase4-fastchannel.md](spec/phases/phase4-fastchannel.md) |
+| 5 | FastServer | [spec/phases/phase5-fastserver.md](spec/phases/phase5-fastserver.md) |
+
+> Phase 3/4 (UniqueResource / SharedResource) 已移至 `spec/deprecated/`，后续可能移除。
 
 ### CMakeLists 更新规范
 每个 Phase 完成后必须：

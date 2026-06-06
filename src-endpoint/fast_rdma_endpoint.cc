@@ -13,6 +13,7 @@ static const int RESERVED_WR_NUM = 3;
 // Global: recv block size, set once by GlobalInitialize().
 // Following brpc's default branch: GetBlockSize(0) - IOBUF_BLOCK_HEADER_LEN.
 static uint32_t g_rdma_recv_block_size = 0;
+static uint32_t g_rdma_zerocopy_min_size = 512;
 
 void FastRdmaEndpoint::GlobalInitialize() {
     g_rdma_recv_block_size = GetBlockSize(0) - RdmaIOBuf::IOBUF_BLOCK_HEADER_LEN;
@@ -170,23 +171,23 @@ int FastRdmaEndpoint::WriteToFd(int fd, const void* data, size_t len) {
 // Handshake
 // ---------------------------------------------------------------------------
 
-int FastRdmaEndpoint::ProcessHandshakeAtClient(int tcp_fd) {
+int FastRdmaEndpoint::ProcessHandshakeAtClient(FastRdmaEndpoint* ep, int tcp_fd) {
     // 1. Allocate CQ + QP
-    if (AllocateResources(sq_size_, rq_size_) < 0) return -1;
+    if (ep->AllocateResources(ep->sq_size_, ep->rq_size_) < 0) return -1;
 
     // 2. Send HelloMessage
     HelloMessage local;
     local.block_size = g_rdma_recv_block_size;
-    local.sq_size   = sq_size_;
-    local.rq_size   = rq_size_;
-    local.qp_num    = qp_->qp_num;
+    local.sq_size   = ep->sq_size_;
+    local.rq_size   = ep->rq_size_;
+    local.qp_num    = ep->qp_->qp_num;
 
     uint8_t data[HelloMessage::kMsgLen];
     local.Serialize(data);
-    if (WriteToFd(tcp_fd, data, HelloMessage::kMsgLen) < 0) return -1;
+    if (ep->WriteToFd(tcp_fd, data, HelloMessage::kMsgLen) < 0) return -1;
 
     // 3. Receive remote HelloMessage
-    if (ReadFromFd(tcp_fd, data, HelloMessage::kMsgLen) < 0) return -1;
+    if (ep->ReadFromFd(tcp_fd, data, HelloMessage::kMsgLen) < 0) return -1;
     HelloMessage remote;
     remote.Deserialize(data);
 
@@ -194,29 +195,29 @@ int FastRdmaEndpoint::ProcessHandshakeAtClient(int tcp_fd) {
     if (!HelloNegotiationValid(remote)) return -1;
 
     // 4. Set negotiated params
-    remote_recv_block_size_ = remote.block_size;
-    local_window_capacity_  = std::min<int>(sq_size_, remote.rq_size) - RESERVED_WR_NUM;
-    remote_window_capacity_ = std::min<int>(rq_size_, remote.sq_size) - RESERVED_WR_NUM;
-    sq_window_size_.store(local_window_capacity_, std::memory_order_relaxed);
-    remote_rq_window_size_.store(local_window_capacity_, std::memory_order_relaxed);
-    sq_imm_window_size_ = RESERVED_WR_NUM;
+    ep->remote_recv_block_size_ = remote.block_size;
+    ep->local_window_capacity_  = std::min<int>(ep->sq_size_, remote.rq_size) - RESERVED_WR_NUM;
+    ep->remote_window_capacity_ = std::min<int>(ep->rq_size_, remote.sq_size) - RESERVED_WR_NUM;
+    ep->sq_window_size_.store(ep->local_window_capacity_, std::memory_order_relaxed);
+    ep->remote_rq_window_size_.store(ep->local_window_capacity_, std::memory_order_relaxed);
+    ep->sq_imm_window_size_ = RESERVED_WR_NUM;
 
     // 5. Bring up QP (RESET->INIT->RTR->RTS)
     ibv_gid gid;
     memcpy(gid.raw, remote.gid, 16);
-    if (BringUpQp(remote.lid, gid, remote.qp_num) < 0) return -1;
+    if (ep->BringUpQp(remote.lid, gid, remote.qp_num) < 0) return -1;
 
     // 6. Send ACK (RDMA_OK)
     uint32_t ack = htonl(1);
-    if (WriteToFd(tcp_fd, &ack, 4) < 0) return -1;
+    if (ep->WriteToFd(tcp_fd, &ack, 4) < 0) return -1;
 
     return 0;
 }
 
-int FastRdmaEndpoint::ProcessHandshakeAtServer(int tcp_fd) {
+int FastRdmaEndpoint::ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd) {
     // 1. Read client HelloMessage
     uint8_t data[HelloMessage::kMsgLen];
-    if (ReadFromFd(tcp_fd, data, HelloMessage::kMsgLen) < 0) return -1;
+    if (ep->ReadFromFd(tcp_fd, data, HelloMessage::kMsgLen) < 0) return -1;
 
     HelloMessage remote;
     remote.Deserialize(data);
@@ -224,34 +225,34 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(int tcp_fd) {
     if (!HelloNegotiationValid(remote)) return -1;
 
     // 2. Set negotiated params from client info
-    remote_recv_block_size_ = remote.block_size;
-    local_window_capacity_  = std::min<int>(sq_size_, remote.rq_size) - RESERVED_WR_NUM;
-    remote_window_capacity_ = std::min<int>(rq_size_, remote.sq_size) - RESERVED_WR_NUM;
-    sq_window_size_.store(local_window_capacity_, std::memory_order_relaxed);
-    remote_rq_window_size_.store(local_window_capacity_, std::memory_order_relaxed);
-    sq_imm_window_size_ = RESERVED_WR_NUM;
+    ep->remote_recv_block_size_ = remote.block_size;
+    ep->local_window_capacity_  = std::min<int>(ep->sq_size_, remote.rq_size) - RESERVED_WR_NUM;
+    ep->remote_window_capacity_ = std::min<int>(ep->rq_size_, remote.sq_size) - RESERVED_WR_NUM;
+    ep->sq_window_size_.store(ep->local_window_capacity_, std::memory_order_relaxed);
+    ep->remote_rq_window_size_.store(ep->local_window_capacity_, std::memory_order_relaxed);
+    ep->sq_imm_window_size_ = RESERVED_WR_NUM;
 
     // 3. Allocate QP/CQ
-    if (AllocateResources(sq_size_, rq_size_) < 0) return -1;
+    if (ep->AllocateResources(ep->sq_size_, ep->rq_size_) < 0) return -1;
 
     // 4. Bring up QP (RESET→INIT→RTR→RTS), then QP is ready
     ibv_gid gid;
     memcpy(gid.raw, remote.gid, 16);
-    if (BringUpQp(remote.lid, gid, remote.qp_num) < 0) return -1;
+    if (ep->BringUpQp(remote.lid, gid, remote.qp_num) < 0) return -1;
 
     // 5. Send server HelloMessage (qp_num already available from AllocateResources)
     HelloMessage local;
     local.block_size = g_rdma_recv_block_size;
-    local.sq_size   = sq_size_;
-    local.rq_size   = rq_size_;
-    local.qp_num    = qp_ ? qp_->qp_num : 0;
+    local.sq_size   = ep->sq_size_;
+    local.rq_size   = ep->rq_size_;
+    local.qp_num    = ep->qp_ ? ep->qp_->qp_num : 0;
 
     local.Serialize(data);
-    if (WriteToFd(tcp_fd, data, HelloMessage::kMsgLen) < 0) return -1;
+    if (ep->WriteToFd(tcp_fd, data, HelloMessage::kMsgLen) < 0) return -1;
 
     // 6. Wait for client ACK
     uint32_t ack;
-    if (ReadFromFd(tcp_fd, &ack, 4) < 0) return -1;
+    if (ep->ReadFromFd(tcp_fd, &ack, 4) < 0) return -1;
 
     return 0;
 }
@@ -321,6 +322,7 @@ void FastRdmaEndpoint::PollCq() {
 }
 
 ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {
+    bool zerocopy = true;
     switch (wc.opcode) {
     case IBV_WC_SEND:
         if (wc.wr_id == 0) {
@@ -336,22 +338,47 @@ ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {
                 if (sq_sent_ == sbuf_.size()) sq_sent_ = 0;
             }
         }
+
         sq_window_size_.fetch_add(wc.wr_id, std::memory_order_relaxed);
-        send_cv_.notify_all();
+        if (remote_rq_window_size_.load(std::memory_order_relaxed) >= local_window_capacity_ / 8) {
+            // Do not wake up writing thread right after polling IBV_WC_SEND.
+            // Otherwise the writing thread may switch to background too quickly.
+            send_cv_.notify_all();
+        }
         return 0;
 
     case IBV_WC_RECV:
-        if (wc.byte_len > 0 && rq_received_ < rbuf_.size()) {
-            ++rq_received_;
-            if (rq_received_ == rbuf_.size()) rq_received_ = 0;
+        if (wc.byte_len > 0) {
+            if (wc.byte_len < g_rdma_zerocopy_min_size) {
+                zerocopy = false;
+            }
+            if (zerocopy) {
+                rbuf_[rq_received_].cutn(&read_buf_, wc.byte_len);
+            } else {
+                // Copy data when the receive data is really small
+                read_buf_.append(rbuf_data_[rq_received_], wc.byte_len);
+            }
         }
-        if ((wc.wc_flags & IBV_WC_WITH_IMM) && wc.imm_data > 0) {
-            remote_rq_window_size_.fetch_add(ntohl(wc.imm_data),
-                                              std::memory_order_relaxed);
-            send_cv_.notify_all();
+        if (0 != (wc.wc_flags & IBV_WC_WITH_IMM) && wc.imm_data > 0) {
+            // Update window
+            uint32_t acks = ntohs(wc.imm_data);
+            uint32_t wnd_thresh = local_window_capacity_ / 8;
+            uint32_t remote_rq_window_size =
+                remote_rq_window_size_.fetch_add(acks, std::memory_order_relaxed);
+            if (sq_window_size_.load(std::memory_order_relaxed) > 0 &&
+                (remote_rq_window_size >= wnd_thresh || acks >= wnd_thresh)) {
+                // Do not wake up writing thread right after _remote_rq_window_size > 0.
+                // Otherwise the writing thread may switch to background too quickly.
+                send_cv_.notify_all();
+            }
         }
-        PostRecv(1, true);
-        if (wc.byte_len > 0) SendAck(1);
+        // We must re-post recv WR
+        if (PostRecv(1, zerocopy) < 0) {
+            return -1;
+        }
+        if (wc.byte_len > 0) {
+            SendAck(1);
+        }
         return static_cast<ssize_t>(wc.byte_len);
 
     default:

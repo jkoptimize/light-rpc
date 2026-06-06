@@ -1,4 +1,4 @@
-# Phase 6: FastChannel
+# Phase 4: FastChannel
 
 > 客户端端点层集成：集成 RdmaEndpoint + EventDispatcher
 
@@ -51,19 +51,41 @@ void CreateConnection(const std::string& addr, int port) {
 
 ### 3. Medium 消息分块
 
-将消息按 8KB 分块发送。
+核心思路：将 IOBuf 的 block 按序切入 `ibv_sge` 数组，每批不超过 `MAX_SGE` 个 entry、不超过 `block_size` 字节，切成 SGE 后通过 `EnqueueSend` 发出。被切出的数据移动到 `_sbuf` 中管理生命周期，等 send WC 返回后释放。
+
+参考 brpc `rdma_endpoint.cpp` 中 `cut_into_sglist_and_iobuf` + `CutFromIOBufList` 的逻辑：
 
 ```cpp
-void SendMediumMessage(IOBuf& frame) {
-    const uint32_t chunk_size = g_block_size;  // 8KB
+// 从 IOBuf 中切出数据填入 sglist，切出的数据移动到 holder 管理生命周期
+// 返回填写的 sge 数量，或 -1 表示失败
+ssize_t CutIOBufIntoSGE(IOBuf& src, ibv_sge* sglist, size_t max_sge,
+                         uint32_t block_size, IOBuf* holder) {
+    size_t sge_count = 0;
+    size_t total = 0;
+    while (sge_count < max_sge && !src.empty() && total < block_size) {
+        const IOBuf::BlockRef& ref = src.front_ref();
+        void* addr = src.fetch1();
+        uint32_t lkey = GetBlockLKey(ref, addr);
+        if (lkey == 0) {
+            errno = ERDMAMEM;
+            return -1;
+        }
+        size_t len = std::min(ref.length, block_size - total);
+        sglist[sge_count++] = { (uint64_t)addr, len, lkey };
+        src.cutn(holder, len);
+        total += len;
+    }
+    return sge_count;
+}
 
-    for (size_t offset = 0; offset < frame.size(); offset += chunk_size) {
-        ibv_sge sge;
-        sge.addr = GetChunkAddr(frame, offset);
-        sge.length = std::min(chunk_size, frame.size() - offset);
-        sge.lkey = GetChunkLkey(frame, offset);
-
-        endpoint_->EnqueueSend(&sge, 1, 0);
+void FastChannel::SendMediumMessage(IOBuf& frame) {
+    ibv_sge sglist[MAX_SGE];
+    while (!frame.empty()) {
+        ssize_t n = CutIOBufIntoSGE(frame, sglist, MAX_SGE,
+                                     block_size_, &_sbuf[_sq_current]);
+        if (n > 0) {
+            endpoint_->EnqueueSend(sglist, n, 0);
+        }
     }
 }
 ```
@@ -113,13 +135,15 @@ TEST(FastChannel, MediumMultipartSend) {
     channel.Init();
     channel.Connect("127.0.0.1", 8888);
 
-    // 创建 16KB 消息（需要分 2 块）
+    // 构造 16KB 测试数据（含 2 个 8KB block）
+    char test_data[16 * 1024];
+    memset(test_data, 'A', sizeof(test_data));
     IOBuf frame;
-    frame.AppendRandom(16 * 1024);
+    frame.append(test_data, sizeof(test_data));
+    ASSERT_EQ(frame.size(), 16384);
 
     channel.SendMediumMessage(frame);
 
-    // 验证分块数量
     EXPECT_EQ(channel.GetLastChunkCount(), 2);
 }
 ```
@@ -135,37 +159,12 @@ TEST(FastChannel, MediumMultipartSend) {
 
 ---
 
-## 验收标准
-
-1. 测试全部通过
-2. 编译无警告
-3. 代码符合编码规范
-
----
-
 ## CMakeLists 更新
 
-```cmake
-# 单元测试添加
-add_executable(unit_tests
-    test/unit/test_one_way_butex.cc
-    test/unit/test_event_dispatcher.cc
-    test/unit/test_rdma_endpoint.cc
-    test/unit/test_unique_resource.cc
-    test/unit/test_shared_resource.cc
-    test/unit/test_fast_channel.cc      # 新增
-    ...
-)
-```
-
-**编译验证**：
-```bash
-cd build && make
-./unit_tests
-```
+新增测试：`test/unit/test_fast_channel.cc`
 
 ---
 
 ## 下一步
 
-Phase 7: FastServer
+Phase 5: FastServer

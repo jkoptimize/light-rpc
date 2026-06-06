@@ -1,4 +1,4 @@
-# Phase 5: SharedResource
+# Phase 4: SharedResource
 
 > 服务端资源层改造：移除 SRQ，改为 per-connection QP/CQ
 
@@ -126,36 +126,12 @@ TEST(SharedResource, RegisterEndpoint) {
 
 ---
 
-## 验收标准
-
-1. 测试全部通过
-2. 编译无警告
-3. 代码符合编码规范
-
----
-
 ## CMakeLists 更新
 
-```cmake
-# 单元测试添加
-add_executable(unit_tests
-    test/unit/test_one_way_butex.cc
-    test/unit/test_event_dispatcher.cc
-    test/unit/test_rdma_endpoint.cc
-    test/unit/test_unique_resource.cc
-    test/unit/test_shared_resource.cc   # 新增
-    ...
-)
-```
-
-**编译验证**：
-```bash
-cd build && make
-./unit_tests
-```
+新增测试：`test/unit/test_shared_resource.cc`
 
 ---
 
 ## 下一步
 
-Phase 6: FastChannel
+Phase 5: FastChannel
