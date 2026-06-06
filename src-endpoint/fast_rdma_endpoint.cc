@@ -10,12 +10,36 @@ namespace fast {
 
 static const int RESERVED_WR_NUM = 3;
 
-// Global: recv block size, set once by GlobalInitialize().
-// Following brpc's default branch: GetBlockSize(0) - IOBUF_BLOCK_HEADER_LEN.
-static uint32_t g_rdma_recv_block_size = 0;
-static uint32_t g_rdma_zerocopy_min_size = 512;
+// ---- Global RDMA resources (set once by GlobalInitialize) ----
+static ibv_context* g_ctx    = nullptr;
+static ibv_pd*      g_pd     = nullptr;
+static ibv_gid      g_gid    = {};
+static uint16_t     g_lid    = 0;
+static int          g_rdma_max_sge = 32;
+static uint32_t     g_rdma_recv_block_size = 0;
+static uint32_t     g_rdma_zerocopy_min_size = 512;
 
 void FastRdmaEndpoint::GlobalInitialize() {
+    ibv_device** devs = ibv_get_device_list(nullptr);
+    CHECK(devs != nullptr && devs[0] != nullptr);
+    g_ctx = ibv_open_device(devs[0]);
+    CHECK(g_ctx != nullptr);
+    ibv_free_device_list(devs);
+
+    g_pd = ibv_alloc_pd(g_ctx);
+    CHECK(g_pd != nullptr);
+
+    ibv_device_attr attr;
+    CHECK(ibv_query_device(g_ctx, &attr) == 0);
+    g_rdma_max_sge = attr.max_sge;
+
+    ibv_port_attr port_attr;
+    CHECK(ibv_query_port(g_ctx, 1, &port_attr) == 0);
+    g_lid = port_attr.lid;
+
+    // RoCE: take GID at index 0
+    CHECK(ibv_query_gid(g_ctx, 1, 0, &g_gid) == 0);
+
     g_rdma_recv_block_size = GetBlockSize(0) - RdmaIOBuf::IOBUF_BLOCK_HEADER_LEN;
 }
 
@@ -136,7 +160,17 @@ int FastRdmaEndpoint::SendAck(int num) {
 
 int FastRdmaEndpoint::SendImm(uint32_t imm) {
     if (imm == 0) return 0;
-    // TODO: ibv_post_send with IBV_WR_SEND_WITH_IMM, wr_id=0
+
+    ibv_send_wr wr = {};
+    wr.opcode     = IBV_WR_SEND_WITH_IMM;
+    wr.imm_data   = htonl(imm);
+    wr.send_flags = IBV_SEND_SOLICITED | IBV_SEND_SIGNALED;
+    wr.wr_id      = 0;
+
+    ibv_send_wr* bad = nullptr;
+    int ret = ibv_post_send(qp_, &wr, &bad);
+    if (ret != 0) return -1;
+
     sq_imm_window_size_ -= 1;
     return 0;
 }
@@ -262,39 +296,127 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd)
 // ---------------------------------------------------------------------------
 
 int FastRdmaEndpoint::AllocateResources() {
-    // TODO: create comp_channel, send_cq, recv_cq, qp via ibv_* calls
+    comp_channel_ = ibv_create_comp_channel(g_ctx);
+    CHECK(comp_channel_ != nullptr);
+
+    send_cq_ = ibv_create_cq(g_ctx, sq_size_, nullptr, comp_channel_, 0);
+    recv_cq_ = ibv_create_cq(g_ctx, rq_size_, nullptr, comp_channel_, 0);
+    CHECK(send_cq_ != nullptr && recv_cq_ != nullptr);
+
+    ibv_qp_init_attr qp_attr = {};
+    qp_attr.send_cq = send_cq_;
+    qp_attr.recv_cq = recv_cq_;
+    qp_attr.qp_type = IBV_QPT_RC;
+    qp_attr.cap.max_send_wr  = sq_size_;
+    qp_attr.cap.max_recv_wr  = rq_size_;
+    qp_attr.cap.max_send_sge = g_rdma_max_sge;
+    qp_attr.cap.max_recv_sge = 1;
+
+    qp_ = ibv_create_qp(g_pd, &qp_attr);
+    CHECK(qp_ != nullptr);
+
     sbuf_.resize(sq_size_ - RESERVED_WR_NUM);
     rbuf_.resize(rq_size_);
     rbuf_data_.resize(rq_size_, nullptr);
+
+    ibv_req_notify_cq(send_cq_, 0);
+    ibv_req_notify_cq(recv_cq_, 1);
+
     return 0;
 }
 
-int FastRdmaEndpoint::BringUpQp(uint16_t /*lid*/, ibv_gid /*gid*/, uint32_t /*remote_qpn*/) {
-    // TODO: ibv_modify_qp RESET->INIT
-    // Then post initial recv WRs while QP is in INIT state:
-    if (PostRecv(rq_size_, false) < 0) return -1;
-    // TODO: ibv_modify_qp INIT->RTR, RTR->RTS
+int FastRdmaEndpoint::BringUpQp(uint16_t lid, ibv_gid gid, uint32_t remote_qpn) {
+    ibv_qp_attr attr = {};
+
+    // RESET -> INIT
+    attr.qp_state        = IBV_QPS_INIT;
+    attr.pkey_index      = 0;
+    attr.port_num        = 1;
+    attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE;
+    CHECK(ibv_modify_qp(qp_, &attr,
+        IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS) == 0);
+
+    if (PostRecv(rq_size_, true) < 0) return -1;
+
+    // INIT -> RTR
+    memset(&attr, 0, sizeof(attr));
+    attr.qp_state              = IBV_QPS_RTR;
+    attr.path_mtu              = IBV_MTU_1024;
+    attr.dest_qp_num           = remote_qpn;
+    attr.rq_psn                = 0;
+    attr.max_dest_rd_atomic    = 0;
+    attr.min_rnr_timer         = 0;
+    attr.ah_attr.dlid          = lid;
+    attr.ah_attr.sl            = 0;
+    attr.ah_attr.src_path_bits = 0;
+    attr.ah_attr.is_global     = 1;
+    attr.ah_attr.port_num      = 1;
+    attr.ah_attr.grh.dgid      = gid;
+    attr.ah_attr.grh.sgid_index = 0;
+    attr.ah_attr.grh.hop_limit  = 16;
+    CHECK(ibv_modify_qp(qp_, &attr,
+        IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
+        IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER | IBV_QP_AV) == 0);
+
+    // RTR -> RTS
+    memset(&attr, 0, sizeof(attr));
+    attr.qp_state      = IBV_QPS_RTS;
+    attr.timeout        = 14;
+    attr.retry_cnt      = 7;
+    attr.rnr_retry      = 0;
+    attr.sq_psn         = 0;
+    attr.max_rd_atomic  = 0;
+    CHECK(ibv_modify_qp(qp_, &attr,
+        IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
+        IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC) == 0);
+
     return 0;
 }
 
 void FastRdmaEndpoint::DeallocateResources() {
-    // TODO: destroy qp, cqs, comp_channel via ibv_* calls
     sbuf_.clear();
     rbuf_.clear();
     rbuf_data_.clear();
+
+    if (qp_)      { ibv_destroy_qp(qp_);            qp_ = nullptr; }
+    if (send_cq_) { ibv_destroy_cq(send_cq_);        send_cq_ = nullptr; }
+    if (recv_cq_) { ibv_destroy_cq(recv_cq_);        recv_cq_ = nullptr; }
+    if (comp_channel_) { ibv_destroy_comp_channel(comp_channel_); comp_channel_ = nullptr; }
 }
 
 // ---------------------------------------------------------------------------
 // Recv
 // ---------------------------------------------------------------------------
 
-int FastRdmaEndpoint::DoPostRecv(void* /*block*/, size_t /*block_size*/) {
-    // TODO: ibv_post_recv
-    return 0;
+int FastRdmaEndpoint::DoPostRecv(void* block, size_t block_size) {
+    ibv_recv_wr wr = {};
+    ibv_sge sge = {};
+    sge.addr   = reinterpret_cast<uint64_t>(block);
+    sge.length  = static_cast<uint32_t>(block_size);
+    sge.lkey    = GetRegionId(block);
+    wr.sg_list  = &sge;
+    wr.num_sge  = 1;
+
+    ibv_recv_wr* bad = nullptr;
+    return ibv_post_recv(qp_, &wr, &bad);
 }
 
-int FastRdmaEndpoint::PostRecv(uint32_t num, bool /*zerocopy*/) {
-    // TODO: prepare buffers and ibv_post_recv to RQ
+int FastRdmaEndpoint::PostRecv(uint32_t num, bool zerocopy) {
+    while (num-- > 0) {
+        if (zerocopy) {
+            rbuf_[rq_received_].clear();
+            IOBufAsZeroCopyOutputStream os(&rbuf_[rq_received_],
+                g_rdma_recv_block_size + RdmaIOBuf::IOBUF_BLOCK_HEADER_LEN);
+            int size = 0;
+            if (!os.Next(&rbuf_data_[rq_received_], &size)) return -1;
+        }
+        if (DoPostRecv(rbuf_data_[rq_received_], g_rdma_recv_block_size) < 0) {
+            rbuf_[rq_received_].clear();
+            return -1;
+        }
+        ++rq_received_;
+        if (rq_received_ == rbuf_.size()) rq_received_ = 0;
+    }
     new_rq_wrs_.fetch_add(num, std::memory_order_relaxed);
     return 0;
 }
@@ -303,10 +425,91 @@ int FastRdmaEndpoint::PostRecv(uint32_t num, bool /*zerocopy*/) {
 // Send
 // ---------------------------------------------------------------------------
 
-ssize_t FastRdmaEndpoint::CutFromIOBufList(IOBuf** /*from*/, size_t /*ndata*/) {
-    // TODO: iterate from[0..ndata], cut_into_sglist_and_iobuf,
-    // build ibv_send_wr, ibv_post_send, update sq_current_ and windows
-    return 0;
+ssize_t FastRdmaEndpoint::CutFromIOBufList(IOBuf** from, size_t ndata) {
+    uint32_t remote_rq_wnd = remote_rq_window_size_.load(std::memory_order_relaxed);
+    uint32_t sq_wnd        = sq_window_size_.load(std::memory_order_relaxed);
+
+    if (remote_rq_wnd == 0 || sq_wnd == 0) {
+        errno = EAGAIN;
+        return -1;
+    }
+
+    size_t   total_len = 0;
+    size_t   current   = 0;
+    ibv_send_wr wr;
+    ibv_sge sglist[g_rdma_max_sge];
+
+    while (current < ndata) {
+        IOBuf* to = &sbuf_[sq_current_];
+        size_t this_len = 0;
+
+        memset(&wr, 0, sizeof(wr));
+        wr.sg_list = sglist;
+        wr.opcode  = IBV_WR_SEND_WITH_IMM;
+
+        // ---- Cut IOBuf blocks into sge array ----
+        size_t sge_index = 0;
+        while (sge_index < static_cast<uint32_t>(g_rdma_max_sge) &&
+               this_len < remote_recv_block_size_) {
+            if (from[current]->empty()) {
+                if (++current == ndata) break;
+                continue;
+            }
+            RdmaIOBuf* rio = static_cast<RdmaIOBuf*>(from[current]);
+            ssize_t len = rio->cut_into_sglist_and_iobuf(
+                sglist, &sge_index, to, g_rdma_max_sge,
+                remote_recv_block_size_ - this_len);
+            if (len < 0) return -1;
+            this_len += len;
+            total_len += len;
+        }
+
+        if (this_len == 0) continue;
+
+        wr.num_sge = sge_index;
+
+        // ---- IMM data: carry recv credits ----
+        uint32_t imm = new_rq_wrs_.exchange(0, std::memory_order_relaxed);
+        wr.imm_data = htonl(imm);
+
+        // ---- Solicited flag ----
+        bool solicited = false;
+        if (remote_rq_wnd == 1 || sq_wnd == 1 || current + 1 >= ndata) {
+            solicited = true;
+        } else if (unsolicited_ > local_window_capacity_ / 4) {
+            solicited = true;
+        } else if (accumulated_ack_ > remote_window_capacity_ / 4) {
+            solicited = true;
+        } else {
+            ++unsolicited_;
+            accumulated_ack_ += imm;
+        }
+        if (solicited) {
+            wr.send_flags |= IBV_SEND_SOLICITED;
+            unsolicited_ = 0;
+            accumulated_ack_ = 0;
+        }
+
+        // ---- Selective signaling ----
+        if (++sq_unsignaled_ >= local_window_capacity_ / 4) {
+            wr.send_flags |= IBV_SEND_SIGNALED;
+            wr.wr_id = sq_unsignaled_;
+            sq_unsignaled_ = 0;
+        }
+
+        // ---- Post send ----
+        ibv_send_wr* bad = nullptr;
+        if (ibv_post_send(qp_, &wr, &bad) != 0) return -1;
+
+        // ---- Advance ring buffer ----
+        if (++sq_current_ == sbuf_.size()) sq_current_ = 0;
+
+        // ---- Decrement windows ----
+        remote_rq_wnd = remote_rq_window_size_.fetch_sub(1, std::memory_order_relaxed) - 1;
+        sq_wnd        = sq_window_size_.fetch_sub(1, std::memory_order_relaxed) - 1;
+    }
+
+    return static_cast<ssize_t>(total_len);
 }
 
 // ---------------------------------------------------------------------------

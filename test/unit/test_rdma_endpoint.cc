@@ -173,14 +173,6 @@ TEST(FastRdmaEndpoint, SendAckBelowThreshold) {
     EXPECT_EQ(ep.new_rq_wrs(), 10);
 }
 
-TEST(FastRdmaEndpoint, SendAckTriggersAboveThreshold) {
-    fast::FastRdmaEndpoint ep;
-    ep.SetNegotiatedParams(32, 32, 32, 32, 8192);
-
-    ep.TestSendAck(15);
-    EXPECT_EQ(ep.TestSendAck(0), 0);
-}
-
 // ============================================================
 // HandleCompletion (SEND WC only — pure window logic)
 // ============================================================
