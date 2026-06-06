@@ -214,6 +214,8 @@ int FastRdmaEndpoint::ProcessHandshakeAtClient(FastRdmaEndpoint* ep, int tcp_fd)
     local.block_size = g_rdma_recv_block_size;
     local.sq_size   = ep->sq_size_;
     local.rq_size   = ep->rq_size_;
+    local.lid = g_lid;
+    memcpy(local.gid, g_gid.raw, 16);
     local.qp_num    = ep->qp_->qp_num;
 
     uint8_t data[HelloMessage::kMsgLen];
@@ -279,6 +281,8 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd)
     local.block_size = g_rdma_recv_block_size;
     local.sq_size   = ep->sq_size_;
     local.rq_size   = ep->rq_size_;
+    local.lid       = g_lid;
+    memcpy(local.gid, g_gid.raw, 16);
     local.qp_num    = ep->qp_ ? ep->qp_->qp_num : 0;
 
     local.Serialize(data);
