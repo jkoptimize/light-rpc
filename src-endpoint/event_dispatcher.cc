@@ -19,14 +19,20 @@ EventDispatcher::EventDispatcher() {
     _efd = eventfd(0, EFD_NONBLOCK);
     CHECK(_efd >= 0);
 
-    // Register eventfd so Stop() can wake epoll_wait
     epoll_event evt = {};
     evt.events   = EPOLLIN;
     evt.data.ptr = nullptr;
     CHECK(epoll_ctl(_epfd, EPOLL_CTL_ADD, _efd, &evt) == 0);
+
+    _thread = std::thread(&EventDispatcher::RunEpollLoop, this);
 }
 
 EventDispatcher::~EventDispatcher() {
+    _stop.store(true, std::memory_order_relaxed);
+    uint64_t val = 1;
+    write(_efd, &val, sizeof(val));
+    if (_thread.joinable()) _thread.join();
+
     if (_efd >= 0)  { close(_efd);  _efd  = -1; }
     if (_epfd >= 0) { close(_epfd); _epfd = -1; }
 }
@@ -53,7 +59,7 @@ int EventDispatcher::RemoveFd(int fd) {
     return ret;
 }
 
-void EventDispatcher::Run() {
+void EventDispatcher::RunEpollLoop() {
     epoll_event events[32];
     while (!_stop.load(std::memory_order_relaxed)) {
         int n = epoll_wait(_epfd, events, 32, -1);
@@ -75,14 +81,6 @@ void EventDispatcher::Run() {
             ctx->cb(ctx->user_data, events[i].events);
         }
     }
-}
-
-void EventDispatcher::Stop() {
-    _stop.store(true, std::memory_order_relaxed);
-    // Write to eventfd to wake epoll_wait
-    uint64_t val = 1;
-    write(_efd, &val, sizeof(val));
-    if (_thread.joinable()) _thread.join();
 }
 
 }  // namespace fast

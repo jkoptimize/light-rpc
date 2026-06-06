@@ -7,8 +7,8 @@
 namespace fast {
 
 // Lightweight epoll-based event dispatcher.
-// One dispatcher runs one epoll loop in a dedicated thread.
-// Callbacks are plain function pointers + void* user_data.
+// Thread is started in constructor, stopped in destructor.
+// Usage from outside: just AddFd / RemoveFd.
 
 class EventDispatcher {
 public:
@@ -23,13 +23,9 @@ public:
     // Remove fd from epoll.
     int RemoveFd(int fd);
 
-    // Blocking epoll loop. Runs until Stop() is called.
-    void Run();
-
-    // Signal stop and wake the epoll thread.
-    void Stop();
-
 private:
+    void RunEpollLoop();
+
     int                 _epfd = -1;
     int                 _efd  = -1;  // eventfd for wake
     std::thread         _thread;
