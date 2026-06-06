@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <cstring>
+#include <thread>
 
 #include "fast_block_pool.h"
 #include "fast_log.h"
@@ -550,7 +551,12 @@ int FastRdmaEndpoint::GetAndAckEvents() {
 }
 
 void FastRdmaEndpoint::OnCompChannelEvent(void* user_data, uint32_t /*events*/) {
-    PollCq(static_cast<FastRdmaEndpoint*>(user_data));
+    auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
+    // Only start a new PollCq thread if no thread is already running.
+    if (ep->_nevent.fetch_add(1, std::memory_order_acquire) == 0) {
+        std::thread t(PollCq, ep);
+        t.detach();
+    }
 }
 
 void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
@@ -560,7 +566,7 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
     // 2. Poll CQs — recv first, then send
     bool poll_send = false;
     ibv_cq* cq = ep->recv_cq_;
-    bool notified = false; // if both cq does not have events, we need to re-arm notifications for both cq
+    bool notified = false;
     ibv_wc wc[32];
 
     while (true) {
@@ -572,27 +578,24 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                 cq = ep->send_cq_;
                 continue;
             }
-            // `recv_cq' and `send_cq' have been polled.
             if (!notified) {
                 ibv_req_notify_cq(ep->send_cq_, 0);
                 ibv_req_notify_cq(ep->recv_cq_, 1);
                 notified = true;
-                // Re-poll to catch events that arrived between poll and re-arm
                 poll_send = false;
                 cq = ep->recv_cq_;
                 continue;
             }
 
-            // Both CQs have been polled and re-armed — check for new events.
-            // GetAndAckEvents drains the comp_channel; if new events arrived
-            // between re-arm and now, restart the polling loop.
-            if (0 != ep->GetAndAckEvents()) {
-                poll_send = false;
-                cq = ep->recv_cq_;
-                notified = false;
-                continue;
-            }
-            break;
+            // re-arm + re-poll found nothing — check for new events
+            if (!ep->MoreReadEvents()) break;
+
+            // new events arrived, drain comp_channel and restart
+            if (ep->GetAndAckEvents() < 0) return;
+            poll_send = false;
+            cq = ep->recv_cq_;
+            notified = false;
+            continue;
         }
         notified = false;
 
@@ -604,6 +607,10 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
             ep->HandleCompletion(wc[i]);
         }
     }
+}
+
+bool FastRdmaEndpoint::MoreReadEvents() {
+    return _nevent.fetch_sub(1, std::memory_order_release) != 1;
 }
 
 ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {

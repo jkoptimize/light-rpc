@@ -114,6 +114,7 @@ private:
     int DoPostRecv(void* block, size_t block_size);
     static int ReadFromFd(int fd, void* data, size_t len);
     static int WriteToFd(int fd, const void* data, size_t len);
+    bool MoreReadEvents();
 
     // ---- RDMA resources ----
     ibv_qp*            qp_ = nullptr;
@@ -145,6 +146,9 @@ private:
 
     // ---- ReadBuffer for incoming data ----
     IOBuf              read_buf_;
+
+    // ---- PollCq event counter (ref brpc Socket::_nevent) ----
+    std::atomic<int>  _nevent{0};
 
     // ---- Blocking wait ----
     std::mutex              send_mutex_;
