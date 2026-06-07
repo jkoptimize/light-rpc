@@ -697,6 +697,11 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
             }
             ep->HandleCompletion(wc[i]);
         }
+
+        // Dispatch complete messages after each recv CQ batch (ref brpc PollCq)
+        if (!poll_send) {
+            ep->_msg_dispatcher.ProcessNewMessage(ep->read_buf_);
+        }
     }
 }
 

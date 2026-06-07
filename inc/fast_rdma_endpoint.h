@@ -6,6 +6,7 @@
 #include <vector>
 #include <infiniband/verbs.h>
 #include "fast_iobuf.h"
+#include "message_dispatcher.h"
 
 namespace fast {
 
@@ -101,6 +102,7 @@ public:
     // ============ Query ============
     ibv_qp* qp() const { return qp_; }
     int comp_channel_fd() const;
+    MessageDispatcher& msg_dispatcher() { return _msg_dispatcher; }
 
     // ============ Test Helpers ============
     // These exist solely for unit tests to set up flow-control state
@@ -160,8 +162,9 @@ private:
     std::vector<void*>  rbuf_data_;
     size_t              rq_received_{0};
 
-    // ---- ReadBuffer for incoming data ----
+    // ---- ReadBuffer + message dispatching ----
     IOBuf              read_buf_;
+    MessageDispatcher  _msg_dispatcher;
 
     // ---- PollCq event counter (ref brpc Socket::_nevent) ----
     std::atomic<int>  _nevent{0};
