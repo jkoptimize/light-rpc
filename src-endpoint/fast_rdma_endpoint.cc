@@ -570,7 +570,9 @@ int FastRdmaEndpoint::GetAndAckEvents() {
 // EventDispatcher callbacks — connection management
 // ============================================================
 
-void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t /*events*/) {
+void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t events) {
+    if (events & (EPOLLERR | EPOLLHUP)) return;
+
     int listen_fd = *static_cast<int*>(user_data);
     while (true) {
         int client_fd = accept(listen_fd, nullptr, nullptr);
@@ -588,9 +590,15 @@ void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t /*events*/) {
     }
 }
 
-void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t /*events*/) {
+void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t events) {
     auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
     int fd = ep->tcp_fd_;
+    if (events & (EPOLLERR | EPOLLHUP)) {
+        EventDispatcher::GetInstance().UnregisterEvent(fd);
+        close(fd);
+        delete ep;
+        return;
+    }
     EventDispatcher::GetInstance().UnregisterEvent(fd);
     std::thread([ep, fd]() {
         int ret = ProcessHandshakeAtServer(ep, fd);
@@ -599,9 +607,27 @@ void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t /*events*/) {
     }).detach();
 }
 
-void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t /*events*/) {
+void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
     auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
     int fd = ep->tcp_fd_;
+
+    if (events & (EPOLLERR | EPOLLHUP)) {
+        EventDispatcher::GetInstance().UnregisterEvent(fd);
+        close(fd);
+        delete ep;
+        return;
+    }
+
+    // EPOLLOUT fires for both success and failure — SO_ERROR tells the truth
+    int so_err = 0;
+    socklen_t len = sizeof(so_err);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &len) < 0 || so_err != 0) {
+        EventDispatcher::GetInstance().UnregisterEvent(fd);
+        close(fd);
+        delete ep;
+        return;
+    }
+
     EventDispatcher::GetInstance().UnregisterEvent(fd);
     std::thread([ep, fd]() {
         int ret = ProcessHandshakeAtClient(ep, fd);
