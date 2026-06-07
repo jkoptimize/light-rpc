@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <thread>
+#include <unordered_map>
 #include <cstdint>
 
 namespace fast {
@@ -9,12 +10,8 @@ namespace fast {
 // Epoll-based event dispatcher, one global instance.
 // Thread auto-started in constructor.
 //
-// AddConsumer:     EPOLL_CTL_ADD  with EPOLLIN  | EPOLLET
-// RegisterEvent:   EPOLL_CTL_ADD  with EPOLLOUT | EPOLLET (pollin=false)
-//                  EPOLL_CTL_MOD  to add EPOLLIN        (pollin=true)
-// UnregisterEvent: EPOLL_CTL_MOD  to keep EPOLLIN only  (pollin=true)
-//                  EPOLL_CTL_DEL  remove entirely       (pollin=false)
-// RemoveConsumer:  EPOLL_CTL_DEL  remove entirely
+// RegisterEvent:   EPOLL_CTL_ADD with caller-specified event mask.
+// UnregisterEvent: EPOLL_CTL_DEL and free the associated EventContext.
 
 class EventDispatcher {
 public:
@@ -31,7 +28,6 @@ public:
 
     int UnregisterEvent(int fd);
 
-
 private:
     void RunEpollLoop();
 
@@ -45,6 +41,7 @@ private:
     int                 _efd  = -1;  // eventfd for wake
     std::thread         _thread;
     std::atomic<bool>   _stop{false};
+    std::unordered_map<int, EventContext*> _fd_map;
 };
 
 }  // namespace fast

@@ -33,6 +33,9 @@ EventDispatcher::~EventDispatcher() {
     write(_efd, &val, sizeof(val));
     if (_thread.joinable()) _thread.join();
 
+    for (auto& kv : _fd_map) delete kv.second;
+    _fd_map.clear();
+
     if (_efd >= 0)  { close(_efd);  _efd  = -1; }
     if (_epfd >= 0) { close(_epfd); _epfd = -1; }
 }
@@ -48,12 +51,20 @@ int EventDispatcher::RegisterEvent(int fd, InputCallback in_cb, OutputCallback o
         delete ctx;
         return -1;
     }
+    _fd_map[fd] = ctx;
     return 0;
 }
 
 int EventDispatcher::UnregisterEvent(int fd) {
     epoll_event evt = {};
-    return epoll_ctl(_epfd, EPOLL_CTL_DEL, fd, &evt);
+    int ret = epoll_ctl(_epfd, EPOLL_CTL_DEL, fd, &evt);
+
+    auto it = _fd_map.find(fd);
+    if (it != _fd_map.end()) {
+        delete it->second;
+        _fd_map.erase(it);
+    }
+    return ret;
 }
 
 void EventDispatcher::RunEpollLoop() {
