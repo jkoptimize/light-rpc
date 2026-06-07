@@ -2,7 +2,6 @@
 
 #include <atomic>
 #include <thread>
-#include <unordered_map>
 #include <cstdint>
 
 namespace fast {
@@ -44,13 +43,10 @@ private:
         void*          user_data = nullptr;
     };
 
-    EventContext* get_or_null(int fd);
-
     int                 _epfd = -1;
     int                 _efd  = -1;  // eventfd for wake
     std::thread         _thread;
     std::atomic<bool>   _stop{false};
-    std::unordered_map<int, EventContext*> _fd_map;
 };
 
 }  // namespace fast
