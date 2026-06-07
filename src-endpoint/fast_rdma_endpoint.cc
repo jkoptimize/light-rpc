@@ -1,6 +1,5 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <cstring>
@@ -194,8 +193,7 @@ int FastRdmaEndpoint::ReadFromFd(int fd, void* data, size_t len) {
         } else if (nr == 0) {
             return -1;  // EOF
         } else if (errno == EAGAIN) {
-            pollfd pfd = {fd, POLLIN, 0};
-            poll(&pfd, 1, 50);  // 50ms timeout
+            usleep(50000);
         } else {
             return -1;
         }
@@ -211,8 +209,7 @@ int FastRdmaEndpoint::WriteToFd(int fd, const void* data, size_t len) {
         if (nw > 0) {
             written += static_cast<size_t>(nw);
         } else if (errno == EAGAIN) {
-            pollfd pfd = {fd, POLLOUT, 0};
-            poll(&pfd, 1, 50);
+            usleep(50000);
         } else {
             return -1;
         }
