@@ -50,24 +50,23 @@ int EventDispatcher::AddConsumer(int fd, InputCallback cb, void* user_data) {
     return 0;
 }
 
-int EventDispatcher::RegisterEvent(int fd, OutputCallback cb, void* user_data, bool pollin) {
-    if (!pollin) {
-        auto* ctx = new EventContext{nullptr, cb, user_data};
+int EventDispatcher::RegisterEvent(int fd, InputCallback in_cb, OutputCallback out_cb,
+                                    void* user_data, bool pollin) {
+    auto* ctx = new EventContext{in_cb, out_cb, user_data};
 
-        epoll_event evt = {};
-        evt.events   = EPOLLOUT | EPOLLET;
-        evt.data.ptr = ctx;
-        if (epoll_ctl(_epfd, EPOLL_CTL_ADD, fd, &evt) < 0) {
-            delete ctx;
-            return -1;
-        }
-        return 0;
-    }
-
-    // pollin == true: MOD to add EPOLLIN to existing EPOLLOUT interest set
     epoll_event evt = {};
-    evt.events   = EPOLLIN | EPOLLOUT | EPOLLET;
-    return epoll_ctl(_epfd, EPOLL_CTL_MOD, fd, &evt);
+    evt.data.ptr = ctx;
+    if (!pollin) {
+        evt.events = EPOLLOUT | EPOLLET;
+    } else {
+        evt.events = EPOLLIN | EPOLLOUT | EPOLLET;
+    }
+    int op = pollin ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
+    if (epoll_ctl(_epfd, op, fd, &evt) < 0) {
+        delete ctx;
+        return -1;
+    }
+    return 0;
 }
 
 int EventDispatcher::UnregisterEvent(int fd, bool pollin) {

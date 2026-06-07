@@ -28,7 +28,8 @@ public:
 
     int AddConsumer(int fd, InputCallback cb, void* user_data);
 
-    int RegisterEvent(int fd, OutputCallback cb, void* user_data, bool pollin);
+    int RegisterEvent(int fd, InputCallback in_cb, OutputCallback out_cb,
+                       void* user_data, bool pollin);
 
     int UnregisterEvent(int fd, bool pollin);
 
