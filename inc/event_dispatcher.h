@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <thread>
+#include <unordered_map>
 #include <cstdint>
 
 namespace fast {
@@ -9,9 +10,12 @@ namespace fast {
 // Epoll-based event dispatcher, one global instance.
 // Thread auto-started in constructor.
 //
-// AddConsumer:  register fd for EPOLLIN  (listen / comp_channel / data)
-// RegisterEvent: register fd for EPOLLOUT (connect monitoring, pollin=false)
-//                or add EPOLLIN to existing EPOLLOUT fd (pollin=true)
+// AddConsumer:     EPOLL_CTL_ADD  with EPOLLIN  | EPOLLET
+// RegisterEvent:   EPOLL_CTL_ADD  with EPOLLOUT | EPOLLET (pollin=false)
+//                  EPOLL_CTL_MOD  to add EPOLLIN        (pollin=true)
+// UnregisterEvent: EPOLL_CTL_MOD  to keep EPOLLIN only  (pollin=true)
+//                  EPOLL_CTL_DEL  remove entirely       (pollin=false)
+// RemoveConsumer:  EPOLL_CTL_DEL  remove entirely
 
 class EventDispatcher {
 public:
@@ -23,25 +27,30 @@ public:
     EventDispatcher();
     ~EventDispatcher();
 
-    // EPOLL_CTL_ADD with EPOLLIN | EPOLLET.
-    // Callback fires on EPOLLIN | EPOLLERR | EPOLLHUP.
     int AddConsumer(int fd, InputCallback cb, void* user_data);
 
-    // pollin == false: EPOLL_CTL_ADD with EPOLLOUT | EPOLLET (connect).
-    // pollin == true:  EPOLL_CTL_MOD to add EPOLLIN (fd already watched for EPOLLOUT).
-    // Callback fires on EPOLLOUT | EPOLLERR | EPOLLHUP (or EPOLLIN when pollin=true).
     int RegisterEvent(int fd, OutputCallback cb, void* user_data, bool pollin);
 
-    // EPOLL_CTL_DEL — remove fd entirely from epoll.
+    int UnregisterEvent(int fd, bool pollin);
+
     int RemoveConsumer(int fd);
 
 private:
     void RunEpollLoop();
 
+    struct EventContext {
+        InputCallback  input_cb  = nullptr;
+        OutputCallback output_cb = nullptr;
+        void*          user_data = nullptr;
+    };
+
+    EventContext* get_or_null(int fd);
+
     int                 _epfd = -1;
     int                 _efd  = -1;  // eventfd for wake
     std::thread         _thread;
     std::atomic<bool>   _stop{false};
+    std::unordered_map<int, EventContext*> _fd_map;
 };
 
 }  // namespace fast

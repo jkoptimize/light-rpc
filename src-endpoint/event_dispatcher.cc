@@ -1,19 +1,11 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
-#include <cstdint>
 #include <cstring>
 #include "event_dispatcher.h"
 #include "fast_log.h"
 
 namespace fast {
-
-// Each fd's context holds up to two callbacks (input + output).
-struct EventContext {
-    EventDispatcher::InputCallback  input_cb  = nullptr;
-    EventDispatcher::OutputCallback output_cb = nullptr;
-    void*                           user_data = nullptr;
-};
 
 EventDispatcher& EventDispatcher::GetInstance() {
     static EventDispatcher instance;
@@ -41,8 +33,16 @@ EventDispatcher::~EventDispatcher() {
     write(_efd, &val, sizeof(val));
     if (_thread.joinable()) _thread.join();
 
+    for (auto& kv : _fd_map) delete kv.second;
+    _fd_map.clear();
+
     if (_efd >= 0)  { close(_efd);  _efd  = -1; }
     if (_epfd >= 0) { close(_epfd); _epfd = -1; }
+}
+
+EventDispatcher::EventContext* EventDispatcher::get_or_null(int fd) {
+    auto it = _fd_map.find(fd);
+    return it != _fd_map.end() ? it->second : nullptr;
 }
 
 int EventDispatcher::AddConsumer(int fd, InputCallback cb, void* user_data) {
@@ -55,12 +55,12 @@ int EventDispatcher::AddConsumer(int fd, InputCallback cb, void* user_data) {
         delete ctx;
         return -1;
     }
+    _fd_map[fd] = ctx;
     return 0;
 }
 
 int EventDispatcher::RegisterEvent(int fd, OutputCallback cb, void* user_data, bool pollin) {
     if (!pollin) {
-        // EPOLL_CTL_ADD with EPOLLOUT (connect monitoring)
         auto* ctx = new EventContext{nullptr, cb, user_data};
 
         epoll_event evt = {};
@@ -70,29 +70,47 @@ int EventDispatcher::RegisterEvent(int fd, OutputCallback cb, void* user_data, b
             delete ctx;
             return -1;
         }
+        _fd_map[fd] = ctx;
         return 0;
     }
 
-    // pollin == true: EPOLL_CTL_MOD, add EPOLLIN to existing EPOLLOUT interest set.
-    // Note: since epoll does not support context lookup, we delete-and-re-add.
-    epoll_event old = {};
-    epoll_ctl(_epfd, EPOLL_CTL_DEL, fd, &old);
-
-    auto* ctx = new EventContext{nullptr, cb, user_data};
+    // pollin == true: MOD to add EPOLLIN
+    auto* ctx = get_or_null(fd);
+    if (!ctx) return -1;
+    ctx->input_cb = static_cast<InputCallback>(cb);
+    ctx->user_data = user_data;
 
     epoll_event evt = {};
     evt.events   = EPOLLIN | EPOLLOUT | EPOLLET;
     evt.data.ptr = ctx;
-    if (epoll_ctl(_epfd, EPOLL_CTL_ADD, fd, &evt) < 0) {
-        delete ctx;
-        return -1;
+    return epoll_ctl(_epfd, EPOLL_CTL_MOD, fd, &evt);
+}
+
+int EventDispatcher::UnregisterEvent(int fd, bool pollin) {
+    if (pollin) {
+        // Keep EPOLLIN, remove EPOLLOUT
+        auto* ctx = get_or_null(fd);
+        if (!ctx) return -1;
+        ctx->output_cb = nullptr;
+
+        epoll_event evt = {};
+        evt.events   = EPOLLIN | EPOLLET;
+        evt.data.ptr = ctx;
+        return epoll_ctl(_epfd, EPOLL_CTL_MOD, fd, &evt);
     }
+
+    // pollin == false: remove entirely
+    RemoveConsumer(fd);
     return 0;
 }
 
 int EventDispatcher::RemoveConsumer(int fd) {
+    auto it = _fd_map.find(fd);
+    if (it != _fd_map.end()) {
+        delete it->second;
+        _fd_map.erase(it);
+    }
     epoll_event evt = {};
-    // EPOLL_CTL_DEL frees the epoll event's data.ptr association
     return epoll_ctl(_epfd, EPOLL_CTL_DEL, fd, &evt);
 }
 
@@ -110,7 +128,6 @@ void EventDispatcher::RunEpollLoop() {
         for (int i = 0; i < n; ++i) {
             uint32_t ev = events[i].events;
 
-            // eventfd wake
             if (events[i].data.ptr == nullptr) {
                 uint64_t val;
                 read(_efd, &val, sizeof(val));
@@ -119,11 +136,9 @@ void EventDispatcher::RunEpollLoop() {
 
             auto* ctx = static_cast<EventContext*>(events[i].data.ptr);
 
-            // Input events: EPOLLIN | EPOLLERR | EPOLLHUP
             if (ctx->input_cb && (ev & (EPOLLIN | EPOLLERR | EPOLLHUP))) {
                 ctx->input_cb(ctx->user_data, ev);
             }
-            // Output events: EPOLLOUT | EPOLLERR | EPOLLHUP
             if (ctx->output_cb && (ev & (EPOLLOUT | EPOLLERR | EPOLLHUP))) {
                 ctx->output_cb(ctx->user_data, ev);
             }
