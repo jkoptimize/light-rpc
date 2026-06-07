@@ -3,6 +3,7 @@
 #include <cstring>
 #include <thread>
 
+#include "event_dispatcher.h"
 #include "fast_block_pool.h"
 #include "fast_log.h"
 #include "fast_rdma_endpoint.h"
@@ -323,6 +324,10 @@ int FastRdmaEndpoint::AllocateResources() {
     ibv_req_notify_cq(send_cq_, 0);
     ibv_req_notify_cq(recv_cq_, 1);
 
+    // Register comp_channel fd with global EventDispatcher
+    EventDispatcher::GetInstance().AddConsumer(
+        comp_channel_->fd, OnCompChannelEvent, this);
+
     return 0;
 }
 
@@ -551,21 +556,40 @@ int FastRdmaEndpoint::GetAndAckEvents() {
 // EventDispatcher callbacks — connection management
 // ============================================================
 
-void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t events) {
-    // TODO: accept() a new connection, create FastRdmaEndpoint,
-    // register client_fd with EPOLLIN for OnServerHandshake
+void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t /*events*/) {
+    int listen_fd = *static_cast<int*>(user_data);
+    while (true) {
+        int client_fd = accept(listen_fd, nullptr, nullptr);
+        if (client_fd < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            return;
+        }
+        auto* ep = new FastRdmaEndpoint();
+        ep->tcp_fd_ = client_fd;
+        EventDispatcher::GetInstance().AddConsumer(client_fd, OnServerHandshake, ep);
+    }
 }
 
-void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t events) {
-    // ep->ProcessHandshakeAtServer in a detached thread
+void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t /*events*/) {
     auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
-    // TODO: get tcp_fd, launch handshake thread, register comp_channel_fd after success
+    int fd = ep->tcp_fd_;
+    EventDispatcher::GetInstance().RemoveConsumer(fd);
+    std::thread([ep, fd]() {
+        int ret = ProcessHandshakeAtServer(ep, fd);
+        close(fd);
+        if (ret != 0) delete ep;
+    }).detach();
 }
 
-void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
-    // ep->ProcessHandshakeAtClient in a detached thread
+void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t /*events*/) {
     auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
-    // TODO: get sock_fd, launch handshake thread, register comp_channel_fd after success
+    int fd = ep->tcp_fd_;
+    EventDispatcher::GetInstance().RemoveConsumer(fd);
+    std::thread([ep, fd]() {
+        int ret = ProcessHandshakeAtClient(ep, fd);
+        close(fd);
+        if (ret != 0) delete ep;
+    }).detach();
 }
 
 // ============================================================

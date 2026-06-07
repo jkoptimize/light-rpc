@@ -135,6 +135,9 @@ private:
     ibv_cq*            recv_cq_ = nullptr;
     ibv_comp_channel*  comp_channel_ = nullptr;
 
+    // ---- TCP fd used during handshake ----
+    int    tcp_fd_ = -1;
+
     // ---- Negotiated params ----
     uint16_t sq_size_{128};
     uint16_t rq_size_{128};

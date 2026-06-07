@@ -45,55 +45,49 @@ EventDispatcher::~EventDispatcher() {
     if (_epfd >= 0) { close(_epfd); _epfd = -1; }
 }
 
-static epoll_event* find_event(int epfd, int fd, epoll_event* buf) {
-    epoll_event evt = {};
-    int ret = epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &evt);  // dummy MOD to check existence
-    (void)ret;
-    return nullptr;  // epoll doesn't support query — use EPOLL_CTL_DEL fail as probe
-}
-
 int EventDispatcher::AddConsumer(int fd, InputCallback cb, void* user_data) {
-    // Try EPOLL_CTL_ADD first (fd is new to epoll).
     auto* ctx = new EventContext{cb, nullptr, user_data};
 
     epoll_event evt = {};
     evt.events   = EPOLLIN | EPOLLET;
     evt.data.ptr = ctx;
-    if (epoll_ctl(_epfd, EPOLL_CTL_ADD, fd, &evt) == 0) {
-        return 0;  // new fd, added
-    }
-    if (errno != EEXIST) {
+    if (epoll_ctl(_epfd, EPOLL_CTL_ADD, fd, &evt) < 0) {
         delete ctx;
         return -1;
     }
-
-    // fd already registered — get the existing context and update.
-    // Since epoll doesn't support lookup, we retrieve ctx by a dummy read.
-    // As a workaround: delete and re-add with combined events.
-    epoll_event old = {};
-    epoll_ctl(_epfd, EPOLL_CTL_DEL, fd, &old);
-    // old.data.ptr may not be set by kernel on DEL; ctx is lost.
-    // For now, keep it simple: only support one registration style per fd.
-    // Caller must not mix AddConsumer / RegisterEvent on the same fd.
-    delete ctx;
-    return -1;
+    return 0;
 }
 
-int EventDispatcher::RegisterEvent(int fd, OutputCallback cb, void* user_data) {
+int EventDispatcher::RegisterEvent(int fd, OutputCallback cb, void* user_data, bool pollin) {
+    if (!pollin) {
+        // EPOLL_CTL_ADD with EPOLLOUT (connect monitoring)
+        auto* ctx = new EventContext{nullptr, cb, user_data};
+
+        epoll_event evt = {};
+        evt.events   = EPOLLOUT | EPOLLET;
+        evt.data.ptr = ctx;
+        if (epoll_ctl(_epfd, EPOLL_CTL_ADD, fd, &evt) < 0) {
+            delete ctx;
+            return -1;
+        }
+        return 0;
+    }
+
+    // pollin == true: EPOLL_CTL_MOD, add EPOLLIN to existing EPOLLOUT interest set.
+    // Note: since epoll does not support context lookup, we delete-and-re-add.
+    epoll_event old = {};
+    epoll_ctl(_epfd, EPOLL_CTL_DEL, fd, &old);
+
     auto* ctx = new EventContext{nullptr, cb, user_data};
 
     epoll_event evt = {};
-    evt.events   = EPOLLOUT | EPOLLET;
+    evt.events   = EPOLLIN | EPOLLOUT | EPOLLET;
     evt.data.ptr = ctx;
-    if (epoll_ctl(_epfd, EPOLL_CTL_ADD, fd, &evt) == 0) {
-        return 0;
-    }
-    if (errno != EEXIST) {
+    if (epoll_ctl(_epfd, EPOLL_CTL_ADD, fd, &evt) < 0) {
         delete ctx;
         return -1;
     }
-    delete ctx;
-    return -1;
+    return 0;
 }
 
 int EventDispatcher::RemoveConsumer(int fd) {

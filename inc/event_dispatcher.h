@@ -9,8 +9,9 @@ namespace fast {
 // Epoll-based event dispatcher, one global instance.
 // Thread auto-started in constructor.
 //
-// AddConsumer: register fd for EPOLLIN  (listen / comp_channel)
-// RegisterEvent: register fd for EPOLLOUT (connect completion)
+// AddConsumer:  register fd for EPOLLIN  (listen / comp_channel / data)
+// RegisterEvent: register fd for EPOLLOUT (connect monitoring, pollin=false)
+//                or add EPOLLIN to existing EPOLLOUT fd (pollin=true)
 
 class EventDispatcher {
 public:
@@ -22,15 +23,16 @@ public:
     EventDispatcher();
     ~EventDispatcher();
 
-    // Register fd for EPOLLIN | EPOLLET.
+    // EPOLL_CTL_ADD with EPOLLIN | EPOLLET.
     // Callback fires on EPOLLIN | EPOLLERR | EPOLLHUP.
     int AddConsumer(int fd, InputCallback cb, void* user_data);
 
-    // Register fd for EPOLLOUT | EPOLLET (or modify existing).
-    // Callback fires on EPOLLOUT | EPOLLERR | EPOLLHUP.
-    int RegisterEvent(int fd, OutputCallback cb, void* user_data);
+    // pollin == false: EPOLL_CTL_ADD with EPOLLOUT | EPOLLET (connect).
+    // pollin == true:  EPOLL_CTL_MOD to add EPOLLIN (fd already watched for EPOLLOUT).
+    // Callback fires on EPOLLOUT | EPOLLERR | EPOLLHUP (or EPOLLIN when pollin=true).
+    int RegisterEvent(int fd, OutputCallback cb, void* user_data, bool pollin);
 
-    // Remove fd from epoll (and free context).
+    // EPOLL_CTL_DEL — remove fd entirely from epoll.
     int RemoveConsumer(int fd);
 
 private:
