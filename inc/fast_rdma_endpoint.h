@@ -56,6 +56,7 @@ private:
 // ============================================================
 
 class FastRdmaEndpoint {
+    static const int PROGRESS_INIT = 1;
 public:
     FastRdmaEndpoint();
     ~FastRdmaEndpoint();
@@ -80,8 +81,20 @@ public:
     // ============ Recv & CQ (called by Poller thread) ============
     static void PollCq(FastRdmaEndpoint* ep);
     int GetAndAckEvents();
-    // EventDispatcher callback: disp.AddFd(ep->comp_channel_fd(), OnCompChannelEvent, ep)
+    // ---------- EventDispatcher callbacks ----------
+
+    // Server: listen fd readable — accept connection
+    static void OnServerAccept(void* user_data, uint32_t events);
+
+    // Server: client_fd readable — read HelloMessage, start handshake
+    static void OnServerHandshake(void* user_data, uint32_t events);
+
+    // Client: sock_fd writable (connect complete) — start handshake
+    static void OnClientHandshake(void* user_data, uint32_t events);
+
+    // comp_channel fd readable — poll CQ
     static void OnCompChannelEvent(void* user_data, uint32_t events);
+
     ssize_t HandleCompletion(ibv_wc& wc);
     int PostRecv(uint32_t num, bool zerocopy);
 
@@ -114,7 +127,7 @@ private:
     int DoPostRecv(void* block, size_t block_size);
     static int ReadFromFd(int fd, void* data, size_t len);
     static int WriteToFd(int fd, const void* data, size_t len);
-    bool MoreReadEvents();
+    bool MoreReadEvents(int* progress);
 
     // ---- RDMA resources ----
     ibv_qp*            qp_ = nullptr;

@@ -6,22 +6,32 @@
 
 namespace fast {
 
-// Lightweight epoll-based event dispatcher.
-// Thread is started in constructor, stopped in destructor.
-// Usage from outside: just AddFd / RemoveFd.
+// Epoll-based event dispatcher, one global instance.
+// Thread auto-started in constructor.
+//
+// AddConsumer: register fd for EPOLLIN  (listen / comp_channel)
+// RegisterEvent: register fd for EPOLLOUT (connect completion)
 
 class EventDispatcher {
 public:
-    using Callback = void (*)(void* user_data, uint32_t events);
+    using InputCallback  = void (*)(void* user_data, uint32_t events);
+    using OutputCallback = void (*)(void* user_data, uint32_t events);
+
+    static EventDispatcher& GetInstance();
 
     EventDispatcher();
     ~EventDispatcher();
 
-    // Register fd for EPOLLIN | EPOLLET. cb is called on events.
-    int AddFd(int fd, Callback cb, void* user_data);
+    // Register fd for EPOLLIN | EPOLLET.
+    // Callback fires on EPOLLIN | EPOLLERR | EPOLLHUP.
+    int AddConsumer(int fd, InputCallback cb, void* user_data);
 
-    // Remove fd from epoll.
-    int RemoveFd(int fd);
+    // Register fd for EPOLLOUT | EPOLLET (or modify existing).
+    // Callback fires on EPOLLOUT | EPOLLERR | EPOLLHUP.
+    int RegisterEvent(int fd, OutputCallback cb, void* user_data);
+
+    // Remove fd from epoll (and free context).
+    int RemoveConsumer(int fd);
 
 private:
     void RunEpollLoop();

@@ -523,7 +523,7 @@ int FastRdmaEndpoint::comp_channel_fd() const {
 
 int FastRdmaEndpoint::GetAndAckEvents() {
     static const int MAX_CQ_EVENTS = 128;
-    int send_events = 0, recv_events = 0, total = 0;
+    int send_events = 0, recv_events = 0;
     while (true) {
         ibv_cq* cq = nullptr;
         void*   ctx = nullptr;
@@ -534,21 +534,43 @@ int FastRdmaEndpoint::GetAndAckEvents() {
         }
         if (cq == send_cq_)       ++send_events;
         else if (cq == recv_cq_)  ++recv_events;
-        ++total;
-
-        if (send_events >= MAX_CQ_EVENTS) {
-            ibv_ack_cq_events(send_cq_, send_events);
-            send_events = 0;
-        }
-        if (recv_events >= MAX_CQ_EVENTS) {
-            ibv_ack_cq_events(recv_cq_, recv_events);
-            recv_events = 0;
-        }
+        else LOG_ERR("Unknown CQ event");
     }
-    if (send_events > 0) { ibv_ack_cq_events(send_cq_, send_events); }
-    if (recv_events > 0) { ibv_ack_cq_events(recv_cq_, recv_events); }
-    return total;
+    if (send_events >= MAX_CQ_EVENTS) {
+        ibv_ack_cq_events(send_cq_, send_events);
+        send_events = 0;
+    }
+    if (recv_events >= MAX_CQ_EVENTS) {
+        ibv_ack_cq_events(recv_cq_, recv_events);
+        recv_events = 0;
+    }
+    return 0;
 }
+
+// ============================================================
+// EventDispatcher callbacks — connection management
+// ============================================================
+
+void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t events) {
+    // TODO: accept() a new connection, create FastRdmaEndpoint,
+    // register client_fd with EPOLLIN for OnServerHandshake
+}
+
+void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t events) {
+    // ep->ProcessHandshakeAtServer in a detached thread
+    auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
+    // TODO: get tcp_fd, launch handshake thread, register comp_channel_fd after success
+}
+
+void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
+    // ep->ProcessHandshakeAtClient in a detached thread
+    auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
+    // TODO: get sock_fd, launch handshake thread, register comp_channel_fd after success
+}
+
+// ============================================================
+// comp_channel callback — PollCq dispatch
+// ============================================================
 
 void FastRdmaEndpoint::OnCompChannelEvent(void* user_data, uint32_t /*events*/) {
     auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
@@ -568,6 +590,7 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
     ibv_cq* cq = ep->recv_cq_;
     bool notified = false;
     ibv_wc wc[32];
+    int progress = PROGRESS_INIT;
 
     while (true) {
         int cnt = ibv_poll_cq(cq, 32, wc);
@@ -588,7 +611,7 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
             }
 
             // re-arm + re-poll found nothing — check for new events
-            if (!ep->MoreReadEvents()) break;
+            if (!ep->MoreReadEvents(&progress)) break;
 
             // new events arrived, drain comp_channel and restart
             if (ep->GetAndAckEvents() < 0) return;
@@ -609,8 +632,9 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
     }
 }
 
-bool FastRdmaEndpoint::MoreReadEvents() {
-    return _nevent.fetch_sub(1, std::memory_order_release) != 1;
+bool FastRdmaEndpoint::MoreReadEvents(int* progress) {
+    return _nevent.compare_exchange_strong(*progress, 0, std::memory_order_release,
+        std::memory_order_acquire);
 }
 
 ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {
