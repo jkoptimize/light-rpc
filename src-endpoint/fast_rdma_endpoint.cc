@@ -1,4 +1,6 @@
 #include <arpa/inet.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <cstring>
@@ -187,8 +189,16 @@ int FastRdmaEndpoint::ReadFromFd(int fd, void* data, size_t len) {
     char*  buf      = static_cast<char*>(data);
     while (received < len) {
         ssize_t nr = read(fd, buf + received, len - received);
-        if (nr <= 0) return -1;
-        received += static_cast<size_t>(nr);
+        if (nr > 0) {
+            received += static_cast<size_t>(nr);
+        } else if (nr == 0) {
+            return -1;  // EOF
+        } else if (errno == EAGAIN) {
+            pollfd pfd = {fd, POLLIN, 0};
+            poll(&pfd, 1, 50);  // 50ms timeout
+        } else {
+            return -1;
+        }
     }
     return 0;
 }
@@ -198,8 +208,14 @@ int FastRdmaEndpoint::WriteToFd(int fd, const void* data, size_t len) {
     const char* buf = static_cast<const char*>(data);
     while (written < len) {
         ssize_t nw = write(fd, buf + written, len - written);
-        if (nw <= 0) return -1;
-        written += static_cast<size_t>(nw);
+        if (nw > 0) {
+            written += static_cast<size_t>(nw);
+        } else if (errno == EAGAIN) {
+            pollfd pfd = {fd, POLLOUT, 0};
+            poll(&pfd, 1, 50);
+        } else {
+            return -1;
+        }
     }
     return 0;
 }
@@ -565,6 +581,9 @@ void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t /*events*/) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
             return;
         }
+        fcntl(client_fd, F_SETFL, O_NONBLOCK);
+        fcntl(client_fd, F_SETFD, FD_CLOEXEC);
+
         auto* ep = new FastRdmaEndpoint();
         ep->tcp_fd_ = client_fd;
         EventDispatcher::GetInstance().RegisterEvent(
