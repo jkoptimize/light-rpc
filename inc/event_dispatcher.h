@@ -26,14 +26,11 @@ public:
     EventDispatcher();
     ~EventDispatcher();
 
-    int AddConsumer(int fd, InputCallback cb, void* user_data);
-
     int RegisterEvent(int fd, InputCallback in_cb, OutputCallback out_cb,
-                       void* user_data, bool pollin);
+                       void* user_data, uint32_t events);
 
-    int UnregisterEvent(int fd, bool pollin);
+    int UnregisterEvent(int fd);
 
-    int RemoveConsumer(int fd);
 
 private:
     void RunEpollLoop();

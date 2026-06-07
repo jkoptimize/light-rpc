@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <sys/epoll.h>
 #include <unistd.h>
 #include <cstring>
 #include <thread>
@@ -325,8 +326,8 @@ int FastRdmaEndpoint::AllocateResources() {
     ibv_req_notify_cq(recv_cq_, 1);
 
     // Register comp_channel fd with global EventDispatcher
-    EventDispatcher::GetInstance().AddConsumer(
-        comp_channel_->fd, OnCompChannelEvent, this);
+    EventDispatcher::GetInstance().RegisterEvent(
+        comp_channel_->fd, OnCompChannelEvent, nullptr, this, EPOLLIN | EPOLLET);
 
     return 0;
 }
@@ -566,14 +567,15 @@ void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t /*events*/) {
         }
         auto* ep = new FastRdmaEndpoint();
         ep->tcp_fd_ = client_fd;
-        EventDispatcher::GetInstance().AddConsumer(client_fd, OnServerHandshake, ep);
+        EventDispatcher::GetInstance().RegisterEvent(
+            client_fd, OnServerHandshake, nullptr, ep, EPOLLIN | EPOLLET);
     }
 }
 
 void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t /*events*/) {
     auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
     int fd = ep->tcp_fd_;
-    EventDispatcher::GetInstance().RemoveConsumer(fd);
+    EventDispatcher::GetInstance().UnregisterEvent(fd);
     std::thread([ep, fd]() {
         int ret = ProcessHandshakeAtServer(ep, fd);
         close(fd);
@@ -584,7 +586,7 @@ void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t /*events*/) {
 void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t /*events*/) {
     auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
     int fd = ep->tcp_fd_;
-    EventDispatcher::GetInstance().RemoveConsumer(fd);
+    EventDispatcher::GetInstance().UnregisterEvent(fd);
     std::thread([ep, fd]() {
         int ret = ProcessHandshakeAtClient(ep, fd);
         close(fd);

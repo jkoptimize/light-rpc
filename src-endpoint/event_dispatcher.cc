@@ -37,12 +37,13 @@ EventDispatcher::~EventDispatcher() {
     if (_epfd >= 0) { close(_epfd); _epfd = -1; }
 }
 
-int EventDispatcher::AddConsumer(int fd, InputCallback cb, void* user_data) {
-    auto* ctx = new EventContext{cb, nullptr, user_data};
+int EventDispatcher::RegisterEvent(int fd, InputCallback in_cb, OutputCallback out_cb,
+                                    void* user_data, uint32_t events) {
+    auto* ctx = new EventContext{in_cb, out_cb, user_data};
 
     epoll_event evt = {};
-    evt.events   = EPOLLIN | EPOLLET;
     evt.data.ptr = ctx;
+    evt.events = events | EPOLLERR | EPOLLHUP;
     if (epoll_ctl(_epfd, EPOLL_CTL_ADD, fd, &evt) < 0) {
         delete ctx;
         return -1;
@@ -50,39 +51,7 @@ int EventDispatcher::AddConsumer(int fd, InputCallback cb, void* user_data) {
     return 0;
 }
 
-int EventDispatcher::RegisterEvent(int fd, InputCallback in_cb, OutputCallback out_cb,
-                                    void* user_data, bool pollin) {
-    auto* ctx = new EventContext{in_cb, out_cb, user_data};
-
-    epoll_event evt = {};
-    evt.data.ptr = ctx;
-    if (!pollin) {
-        evt.events = EPOLLOUT | EPOLLET;
-    } else {
-        evt.events = EPOLLIN | EPOLLOUT | EPOLLET;
-    }
-    int op = pollin ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
-    if (epoll_ctl(_epfd, op, fd, &evt) < 0) {
-        delete ctx;
-        return -1;
-    }
-    return 0;
-}
-
-int EventDispatcher::UnregisterEvent(int fd, bool pollin) {
-    if (pollin) {
-        // Keep EPOLLIN, remove EPOLLOUT
-        epoll_event evt = {};
-        evt.events   = EPOLLIN | EPOLLET;
-        return epoll_ctl(_epfd, EPOLL_CTL_MOD, fd, &evt);
-    }
-
-    // pollin == false: remove entirely
-    RemoveConsumer(fd);
-    return 0;
-}
-
-int EventDispatcher::RemoveConsumer(int fd) {
+int EventDispatcher::UnregisterEvent(int fd) {
     epoll_event evt = {};
     return epoll_ctl(_epfd, EPOLL_CTL_DEL, fd, &evt);
 }
