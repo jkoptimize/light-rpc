@@ -71,16 +71,23 @@ test/
 
 ## 三、迭代规划
 
-| Phase | 名称 | 文档 |
-|-------|------|------|
-| Phase 1 | FastRdmaEndpoint | [phases/phase1-rdmaendpoint.md](phases/phase1-rdmaendpoint.md) |
-| Phase 2 | EventDispatcher | [phases/phase2-eventdispatcher.md](phases/phase2-eventdispatcher.md) |
-| Phase 3 | MessageDispatcher | 新增 — 简化版消息分发器 |
-| Phase 4 | FastChannel | [phases/phase4-fastchannel.md](phases/phase4-fastchannel.md) |
-| Phase 5 | FastServer | [phases/phase5-fastserver.md](phases/phase5-fastserver.md) |
+| Phase | 名称 | 状态 | 文档 |
+|-------|------|------|------|
+| Phase 1 | FastRdmaEndpoint | 已完成 | [phases/phase1-rdmaendpoint.md](phases/phase1-rdmaendpoint.md) |
+| Phase 2 | EventDispatcher | 已完成 | [phases/phase2-eventdispatcher.md](phases/phase2-eventdispatcher.md) |
+| Phase 3 | MessageDispatcher | 已完成 | (inline in fast_rdma_endpoint.h / message_dispatcher.*) |
+| Phase 4 | FastChannel | 设计中 | [phases/phase4-fastchannel.md](phases/phase4-fastchannel.md) |
+| Phase 5 | FastServer | 设计中 | [phases/phase5-fastserver.md](phases/phase5-fastserver.md) |
 
-> **注**：Phase 3/4 (UniqueResource / SharedResource) 已移至 `spec/deprecated/`，后续可能不再需要。
-> FastRdmaEndpoint 内部维护 `std::condition_variable`，KeepWrite 线程 SQ 满时阻塞于此，HandleCompletion 收到 send WC 后唤醒。
+> **已完成**：Phase 1-3 实现了完整的 TCP 握手、per-connection QP/CQ、EventDispatcher epoll、PollCq、MessageDispatcher 帧分发。
+>
+> **新设计**（2026-06-16）：Phase 4/5 采用 brpc 风格的回调结构。
+> - FastRdmaEndpoint 新增 WriteQueue（`_write_head` 原子链表 + `StartWrite` / `KeepWrite` / `IsWriteComplete`）
+> - FastChannel: `OnSerializeRequest` / `OnProcessResponse` 回调
+> - FastServer: `OnProcessRequest` / `OnSerializeResponse` 回调
+> - 移除 UniqueResource / SharedResource / librdmacm，全部改用 raw ibv_verbs + TCP 握手
+> - MessageDispatcher 添加 DispatcherMode (kServer/kClient)
+> - ResponseHead proto total_len 调为 field 1
 
 ---
 
