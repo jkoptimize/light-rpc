@@ -2,29 +2,29 @@
 #include "build/test.pb.h"
 #include "test/utils.h"
 
-class EchoServiceImpl : public EchoService
-{
+class EchoServiceImpl : public EchoService {
 public:
-  void Echo(google::protobuf::RpcController *controller,
-            const TestRequest *request,
-            TestResponse *response,
-            google::protobuf::Closure *done) override
-  {
-    response->set_response(request->request());
-    done->Run();
-  }
+    void Echo(google::protobuf::RpcController* controller,
+              const TestRequest* request,
+              TestResponse* response,
+              google::protobuf::Closure* done) override {
+        response->set_response(request->request());
+        done->Run();
+    }
 };
 
-int main(int argc, char *argv[])
-{
-  std::string local_ip;
-  GetLocalIp(local_ip);
+int main(int argc, char* argv[]) {
+    std::string local_ip;
+    GetLocalIp(local_ip);
 
-  fast::SharedResource shared_res(local_ip, 1024);
-  fast::FastServer server(&shared_res);
+    fast::FastServer server(local_ip, 1024);
+    EchoServiceImpl echo_service;
+    server.AddService(fast::SERVER_DOESNT_OWN_SERVICE, &echo_service);
+    server.BuildAndStart();
 
-  EchoServiceImpl echo_service;
-  server.AddService(fast::SERVER_DOESNT_OWN_SERVICE, &echo_service);
-  server.BuildAndStart();
-  return 0;
+    // EventDispatcher drives all events; block forever.
+    while (true) {
+        sleep(1);
+    }
+    return 0;
 }

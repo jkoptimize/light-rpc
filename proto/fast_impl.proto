@@ -36,7 +36,7 @@ message AuthorityMessage {
 }
 
 message ResponseHead {
-  fixed32 rpc_id = 1;
-  fixed32 total_len = 2;
+  fixed32 total_len = 1;
+  fixed32 rpc_id = 2;
   uint32 attachment_size = 3;
 }

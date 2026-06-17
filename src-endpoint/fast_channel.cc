@@ -1,431 +1,168 @@
-#include <boost/circular_buffer.hpp>
-#include "inc/fast_channel.h"
-#include "inc/fast_define.h"
-#include "inc/fast_log.h"
-#include "inc/fast_verbs.h"
-#include "inc/fast_block_pool.h"
+#include <arpa/inet.h>
+
+#include "fast_channel.h"
+#include "fast_define.h"
+#include "fast_iobuf.h"
+#include "fast_log.h"
+#include "message_dispatcher.h"
 #include "build/fast_impl.pb.h"
 
-namespace fast
-{
+namespace fast {
 
-  extern thread_local uint64_t send_counter;
-  thread_local boost::circular_buffer<AddressInfo> ibvsend_client_addrs(32);
+static const uint32_t kFixed32Bytes = 4;
 
-  FastChannel::FastChannel(UniqueResource *unique_rsc, std::string dest_ip, int dest_port)
-      : unique_rsc_(unique_rsc), rpc_id_(1)
-  {
-    // Resolve remote address.
-    sockaddr_in dest_addr;
-    memset(&dest_addr, 0, sizeof(dest_addr));
-    dest_addr.sin_family = AF_INET;
-    dest_addr.sin_addr.s_addr = inet_addr(dest_ip.c_str());
-    dest_addr.sin_port = htons(dest_port);
+// ============================================================
+// FastChannel
+// ============================================================
 
-    auto cm_id = unique_rsc_->GetConnMgrID();
+FastChannel::FastChannel(std::string dest_ip, int dest_port) {
+    endpoint_ = new FastRdmaEndpoint();
+    endpoint_->SetRemoteAddr(dest_ip, dest_port);
+    endpoint_->msg_dispatcher().SetMode(DispatcherMode::kClient);
+    endpoint_->msg_dispatcher().SetHandler(OnProcessResponse, this);
+}
 
-    CHECK(rdma_resolve_addr(cm_id, nullptr, reinterpret_cast<sockaddr *>(&dest_addr), timeout_in_ms) == 0);
-    rdma_cm_event *cm_ent = nullptr;
-    CHECK(rdma_get_cm_event(cm_id->channel, &cm_ent) == 0);
-    CHECK(cm_ent->event == RDMA_CM_EVENT_ADDR_RESOLVED);
-    CHECK(rdma_ack_cm_event(cm_ent) == 0);
+FastChannel::~FastChannel() {
+    // Wake up any blocked CallMethod threads.
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    for (auto& kv : pending_map_) {
+        PendingRequest* p = kv.second;
+        std::lock_guard<std::mutex> lock2(p->mutex);
+        p->done = true;
+        p->cv.notify_one();
+    }
+    delete endpoint_;
+}
 
-    // Resolve an RDMA route to the destination address.
-    CHECK(rdma_resolve_route(cm_id, timeout_in_ms) == 0);
-    CHECK(rdma_get_cm_event(cm_id->channel, &cm_ent) == 0);
-    CHECK(cm_ent->event == RDMA_CM_EVENT_ROUTE_RESOLVED);
-    CHECK(rdma_ack_cm_event(cm_ent) == 0);
-
-    // Connect to remote address.
-    rdma_conn_param cm_params;
-    memset(&cm_params, 0, sizeof(cm_params));
-    cm_params.rnr_retry_count = 7; // infinite retry
-    CHECK(rdma_connect(cm_id, &cm_params) == 0);
-    CHECK(rdma_get_cm_event(cm_id->channel, &cm_ent) == 0);
-    CHECK(cm_ent->event == RDMA_CM_EVENT_ESTABLISHED);
-    CHECK(rdma_ack_cm_event(cm_ent) == 0);
-  }
-
-  FastChannel::~FastChannel()
-  {
-    auto cm_id = unique_rsc_->GetConnMgrID();
-
-    CHECK(rdma_disconnect(cm_id) == 0);
-    rdma_cm_event *cm_ent = nullptr;
-    CHECK(rdma_get_cm_event(cm_id->channel, &cm_ent) == 0);
-    CHECK(cm_ent->event == RDMA_CM_EVENT_DISCONNECTED);
-    CHECK(rdma_ack_cm_event(cm_ent) == 0);
-  }
-
-  void FastChannel::CallMethod(const google::protobuf::MethodDescriptor *method,
-                               google::protobuf::RpcController *controller,
-                               const google::protobuf::Message *request,
-                               google::protobuf::Message *response,
-                               google::protobuf::Closure *done)
-  {
+void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
+                              google::protobuf::RpcController* /*controller*/,
+                              const google::protobuf::Message* request,
+                              google::protobuf::Message* response,
+                              google::protobuf::Closure* /*done*/) {
+    // ---- 1. Build MetaDataOfRequest ----
     uint32_t rpc_id = rpc_id_++;
+    uint32_t attachment_len = request_attachment_.length();
 
-    // Step 1: Calculate sizes.
     MetaDataOfRequest meta;
     meta.set_rpc_id(rpc_id);
     meta.set_service_name(method->service()->name());
     meta.set_method_name(method->name());
-    uint32_t meta_len = meta.ByteSizeLong();
-    uint32_t payload_len = request->ByteSizeLong();
-    uint32_t attachment_len = request_attachment_.length();
     meta.set_attachment_size(attachment_len);
 
-    uint32_t total_length = 2 * fixed32_bytes + meta_len + payload_len + attachment_len;
+    uint32_t meta_len    = meta.ByteSizeLong();
+    uint32_t payload_len = request->ByteSizeLong();
+    uint32_t total_len   = 2 * kFixed32Bytes + meta_len + payload_len + attachment_len;
 
-    LengthOfMetaData part2;
-    part2.set_metadata_len(meta_len);
-    CHECK(part2.ByteSizeLong() == fixed32_bytes);
+    // ---- 2. Build IOBuf frame: [total_len][meta_len][meta][payload][attachment] ----
+    IOBuf frame;
+    frame.append(&total_len, kFixed32Bytes);
+    frame.append(&meta_len, kFixed32Bytes);
 
-    TotalLengthOfMsg part1;
-    part1.set_total_len(total_length);
-    CHECK(part1.ByteSizeLong() == fixed32_bytes);
-
-    /// NOTE: Post one recv WR for receiving response.
-    uint64_t block_addr = 0;
-    unique_rsc_->ObtainOneBlock(block_addr);
-    unique_rsc_->PostOneRecvRequest(block_addr);
-
-    ibv_qp *local_qp = unique_rsc_->GetConnMgrID()->qp;
-
-    if (total_length <= max_inline_data)
     {
-      // Inline path: build frame into stack buffer, then send inline.
-      char msg_buf[max_inline_data];
-
-      // Build frame: [|total_len|metadata_len|][meta][payload][attachment]
-      char *dst = msg_buf;
-      memcpy(dst, &total_length, fixed32_bytes);
-      dst += fixed32_bytes;
-      memcpy(dst, &meta_len, fixed32_bytes);
-      dst += fixed32_bytes;
-
-      // Serialize meta directly into msg_buf via CodedOutputStream.
-      google::protobuf::io::ArrayOutputStream arr_out(dst, meta_len);
-      google::protobuf::io::CodedOutputStream coded(&arr_out);
-      meta.SerializeWithCachedSizes(&coded);
-      CHECK(!coded.HadError());
-      dst += meta_len;
-
-      // Serialize payload
-      uint32_t remaining = max_inline_data - (dst - msg_buf);
-      CHECK(payload_len <= remaining);
-      google::protobuf::io::ArrayOutputStream arr_out1(dst, remaining);
-      CHECK(request->SerializeToZeroCopyStream(&arr_out1));
-      dst += payload_len;
-
-      // Append attachment
-      if (attachment_len > 0)
-      {
-        for (size_t i = 0; i < request_attachment_.ref_num(); ++i)
-        {
-          const auto &r = request_attachment_.ref_at(i);
-          memcpy(dst, r.block->data + r.offset, r.length);
-          dst += r.length;
-        }
-      }
-
-      uint64_t msg_addr = reinterpret_cast<uint64_t>(msg_buf);
-      SendInlineMessage(local_qp, FAST_SmallMessage, msg_addr, total_length);
-    }
-    else if (total_length < msg_threshold)
-    {
-      // Medium path: build frame into IOBuf, then decide by total_length.
-      IOBuf frame;
-
-      // Append fixed headers.
-      frame.append(&total_length, fixed32_bytes);
-      frame.append(&meta_len, fixed32_bytes);
-
-      // Serialize meta into IOBuf via ZeroCopyOutputStream.
-      {
         IOBufAsZeroCopyOutputStream zcos(&frame);
         google::protobuf::io::CodedOutputStream coded(&zcos);
         meta.SerializeWithCachedSizes(&coded);
         CHECK(!coded.HadError());
-      }
-
-      // Serialize payload into IOBuf via ZeroCopyOutputStream.
-      {
+    }
+    {
         IOBufAsZeroCopyOutputStream zcos(&frame);
         google::protobuf::io::CodedOutputStream coded(&zcos);
         request->SerializeWithCachedSizes(&coded);
         CHECK(!coded.HadError());
-      }
+    }
 
-      // Append attachment.
-      if (attachment_len > 0)
-      {
+    if (attachment_len > 0) {
         frame.append(request_attachment_);
-      }
-
-      ibv_sge sges[MAX_SGE];
-      int sge_count = 0;
-      for (size_t i = 0; i < frame.ref_num(); ++i)
-      {
-        const auto &r = frame.ref_at(i);
-        sges[sge_count].addr = reinterpret_cast<uint64_t>(r.block->data) + r.offset;
-        sges[sge_count].length = r.length;
-        sges[sge_count].lkey = ::fast::GetRegionId(r.block->data);
-        ++sge_count;
-        ibvsend_client_addrs.push_back(AddressInfo(BLOCK_ADDRESS,
-                                                   reinterpret_cast<uint64_t>(r.block->data) + r.offset,
-                                                   reinterpret_cast<ibv_mr *>(::fast::GetRegionId(r.block->data)),
-                                                   send_counter));
-      }
-
-      SendMiddleMessage(local_qp, sges, sge_count, FAST_SmallMessage);
     }
-    else
-    {
-      // Large message: two-phase protocol, serialize directly into large block.
-      ibv_mr *large_block_mr = unique_rsc_->LargeBlockAlloc(total_length + 1);
-      CHECK(large_block_mr != nullptr);
-      char *frame_buf = reinterpret_cast<char *>(large_block_mr->addr);
-
-      // Obtain one block for receiving authority message.
-      uint64_t auth_addr = 0;
-      unique_rsc_->ObtainOneBlock(auth_addr);
-      char *auth_buf = reinterpret_cast<char *>(auth_addr);
-      memset(auth_buf + fixed_auth_bytes, '0', 1);
-
-      // Step-1: Send the notify message (send op).
-      NotifyMessage notify_msg;
-      notify_msg.set_total_len(total_length);
-      notify_msg.set_remote_key(large_block_mr->lkey);
-      notify_msg.set_remote_addr(reinterpret_cast<uint64_t>(large_block_mr->addr));
-      CHECK(notify_msg.ByteSizeLong() == fixed_noti_bytes);
-      char noti_buf[max_inline_data];
-      CHECK(notify_msg.SerializeToArray(noti_buf, fixed_noti_bytes));
-      SendInlineMessage(local_qp, FAST_NotifyMessage,
-                        reinterpret_cast<uint64_t>(noti_buf), fixed_noti_bytes);
-
-      // Step-2: Serialize frame directly into large_block_mr->addr (zero-copy, no IOBuf).
-      char *dst = frame_buf;
-
-      memcpy(dst, &total_length, fixed32_bytes);
-      dst += fixed32_bytes;
-      memcpy(dst, &meta_len, fixed32_bytes);
-      dst += fixed32_bytes;
-
-      google::protobuf::io::ArrayOutputStream arr_out(dst, meta_len);
-      google::protobuf::io::CodedOutputStream coded(&arr_out);
-      meta.SerializeWithCachedSizes(&coded);
-      CHECK(!coded.HadError());
-      dst += meta_len;
-
-      uint32_t remaining = static_cast<uint32_t>(reinterpret_cast<char *>(large_block_mr->addr) + total_length - dst);
-      google::protobuf::io::ArrayOutputStream arr_out1(dst, remaining);
-      google::protobuf::io::CodedOutputStream coded1(&arr_out1);
-      request->SerializeWithCachedSizes(&coded1);
-      CHECK(!coded1.HadError());
-      dst += payload_len;
-
-      if (attachment_len > 0)
-      {
-        memcpy(dst, request_attachment_.ref_at(0).block->data + request_attachment_.ref_at(0).offset, attachment_len);
-        dst += attachment_len;
-      }
-
-      // Set flag byte to '0' (receiver will set '1' when done reading).
-      memset(frame_buf + total_length, '0', 1);
-
-      // Step-3: Wait for authority message from receiver.
-      volatile char *flag = auth_buf + fixed_auth_bytes;
-      while (*flag != '1')
-      {
-      }
-      AuthorityMessage authority_msg;
-      CHECK(authority_msg.ParseFromArray(auth_buf, fixed_auth_bytes));
-      unique_rsc_->ReturnOneBlock(auth_addr);
-
-      // Step-4: RDMA WRITE the entire frame to receiver's address.
-      ibv_sge write_sg;
-      write_sg.addr = reinterpret_cast<uint64_t>(large_block_mr->addr);
-      write_sg.length = total_length;
-      write_sg.lkey = large_block_mr->lkey;
-
-      // Track for WC cleanup.
-      ibvsend_client_addrs.push_back(AddressInfo(LARGE_BLOCK_ADDRESS,
-                                                 reinterpret_cast<uint64_t>(large_block_mr->addr),
-                                                 large_block_mr, send_counter));
-      WriteLargeMessage(local_qp, &write_sg, 1,
-                        authority_msg.remote_key(),
-                        authority_msg.remote_addr());
-    }
-
-    // NOTE: Clear attachment after use.
     request_attachment_.clear();
 
-    /// NOTE: Try to poll send CQEs.
-    this->TryToPollSendWC();
-
-    ibv_cq *recv_cq = unique_rsc_->GetConnMgrID()->recv_cq;
-    ibv_wc recv_wc;
-    memset(&recv_wc, 0, sizeof(recv_wc));
-    while (true)
+    // ---- 3. Register pending request ----
+    PendingRequest pending;
+    pending.response = response;
     {
-      int num = ibv_poll_cq(recv_cq, 1, &recv_wc);
-      CHECK(num != -1);
-      if (num == 1)
-        break; // Just get one WC.
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        pending_map_[rpc_id] = &pending;
     }
 
-    CHECK(recv_wc.status == IBV_WC_SUCCESS);
-    uint32_t imm_data = ntohl(recv_wc.imm_data);
-    uint64_t recv_addr = recv_wc.wr_id;
+    // ---- 4. Non-blocking enqueue ----
+    endpoint_->StartWrite(std::move(frame));
 
-    if (imm_data == FAST_SmallMessage)
+    // ---- 5. Block waiting for response (1 min timeout) ----
     {
-      char *msg_buf = reinterpret_cast<char *>(recv_addr);
-      ParseAndProcessResponse(msg_buf, true, response);
-    }
-    else
-    {
-      CHECK(imm_data == FAST_NotifyMessage);
-      auto large_recv_mr = ProcessNotifyMessage(recv_addr);
-      ParseAndProcessResponse(large_recv_mr, false, response);
-    }
-  }
-
-  void FastChannel::TryToPollSendWC()
-  {
-    ibv_cq *send_cq = unique_rsc_->GetConnMgrID()->send_cq;
-    ibv_wc send_wc;
-    memset(&send_wc, 0, sizeof(send_wc));
-    while (true)
-    {
-      int num = ibv_poll_cq(send_cq, 1, &send_wc);
-      CHECK(num != -1);
-      if (num == 0)
-        break;
-      CHECK(send_wc.status == IBV_WC_SUCCESS);
-      ProcessSendWorkCompletion(send_wc);
-      memset(&send_wc, 0, sizeof(send_wc));
-    }
-  }
-
-  void FastChannel::ProcessSendWorkCompletion(ibv_wc &send_wc)
-  {
-    if (send_wc.wr_id == 0)
-      return;
-    while (ibvsend_client_addrs.size() > 0 && ibvsend_client_addrs.front().send_counter == send_wc.wr_id)
-    {
-      AddressInfo info = ibvsend_client_addrs.front();
-      if (info.type == BLOCK_ADDRESS)
-      {
-        unique_rsc_->ReturnOneBlock(info.addr);
-      }
-      else
-      {
-        unique_rsc_->ReturnLargeBlock(info.mr);
-      }
-      ibvsend_client_addrs.pop_front();
-    }
-  }
-
-  ibv_mr *FastChannel::ProcessNotifyMessage(uint64_t block_addr)
-  {
-    ibv_qp *local_qp = unique_rsc_->GetConnMgrID()->qp;
-
-    // Step-1: Get the notify message.
-    char *block_buf = reinterpret_cast<char *>(block_addr);
-    NotifyMessage notify_msg;
-    CHECK(notify_msg.ParseFromArray(block_buf, fixed_noti_bytes));
-    // Return the block which stores notify message.
-    unique_rsc_->ReturnOneBlock(block_addr);
-    uint32_t total_length = notify_msg.total_len();
-
-    // Step-2: Allocate receive large block.
-    ibv_mr *recv_mr = unique_rsc_->LargeBlockAlloc(total_length + 1);
-    CHECK(recv_mr != nullptr);
-    char *msg_buf = reinterpret_cast<char *>(recv_mr->addr);
-    // [Receiver]: set the flag byte to '0'.
-    memset(msg_buf + total_length, '0', 1);
-
-    // Step-3: Create and send the authority message (write op).
-    AuthorityMessage authority_msg;
-    authority_msg.set_remote_key(recv_mr->rkey);
-    authority_msg.set_remote_addr(reinterpret_cast<uint64_t>(recv_mr->addr));
-    CHECK(authority_msg.ByteSizeLong() == fixed_auth_bytes);
-    char auth_buf[max_inline_data];
-    uint64_t auth_addr = reinterpret_cast<uint64_t>(auth_buf);
-    CHECK(authority_msg.SerializeToArray(auth_buf, fixed_auth_bytes));
-    // [Sender]: set the flag byte to '1'.
-    memset(auth_buf + fixed_auth_bytes, '1', 1);
-    WriteInlineMessage(local_qp,
-                       auth_addr,
-                       fixed_auth_bytes + 1,
-                       notify_msg.remote_key(),
-                       notify_msg.remote_addr());
-
-    /// NOTE: Try to poll send CQEs.
-    this->TryToPollSendWC();
-
-    // Step-3: Get the large message (busy check).
-    volatile char *flag = msg_buf + total_length;
-    while (*flag != '1')
-    {
+        std::unique_lock<std::mutex> lock(pending.mutex);
+        bool ok = pending.cv.wait_for(lock, std::chrono::minutes(1),
+                                      [&pending] { return pending.done; });
+        if (!ok) {
+            pending.timed_out = true;
+            LOG_ERR("CallMethod timeout, rpc_id=%u", rpc_id);
+        }
     }
 
-    return recv_mr;
-  }
-
-  void FastChannel::ParseAndProcessResponse(void *addr,
-                                            bool small_msg,
-                                            google::protobuf::Message *response)
-  {
-    char *msg_buf = nullptr;
-    if (small_msg)
-    {
-      msg_buf = reinterpret_cast<char *>(addr);
-    }
-    else
-    {
-      auto large_mr = reinterpret_cast<ibv_mr *>(addr);
-      msg_buf = reinterpret_cast<char *>(large_mr->addr);
+    if (!pending.timed_out) {
+        response_attachment_ = std::move(pending.attachment);
     }
 
-    ResponseHead part1;
-    part1.ParseFromArray(msg_buf, fixed_rep_head_bytes);
-    uint32_t rpc_id = part1.rpc_id();
-    uint32_t total_length = part1.total_len();
-    uint32_t attachment_size = part1.attachment_size();
-
-    uint32_t payload_length = total_length - fixed_rep_head_bytes;
-    if (attachment_size > 0)
+    // ---- 6. Cleanup ----
     {
-      payload_length -= attachment_size;
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        pending_map_.erase(rpc_id);
+    }
+}
+
+// ============================================================
+// OnProcessResponse — called by MessageDispatcher detached thread
+// ============================================================
+
+int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
+    auto* self = static_cast<FastChannel*>(arg);
+
+    // Frame format: [total_len:4B][rpc_id:4B][attachment_size:4B][payload][attachment]
+    // total_len was consumed by CutInputMessage; skip it.
+    frame.pop_front(kFixed32Bytes);
+
+    // Parse rpc_id (big-endian).
+    uint32_t rpc_id = ntohl(*static_cast<const uint32_t*>(frame.fetch1()));
+    frame.pop_front(kFixed32Bytes);
+
+    // Parse attachment_size.
+    uint32_t attachment_size =
+        ntohl(*static_cast<const uint32_t*>(frame.fetch1()));
+    frame.pop_front(kFixed32Bytes);
+
+    // Find pending request.
+    std::lock_guard<std::mutex> lock(self->pending_mutex_);
+    auto it = self->pending_map_.find(rpc_id);
+    if (it == self->pending_map_.end()) {
+        LOG_ERR("OnProcessResponse: unknown rpc_id=%u", rpc_id);
+        return -1;
+    }
+    PendingRequest* pending = it->second;
+
+    uint32_t payload_len = frame.length() - attachment_size;
+
+    // Parse protobuf payload.
+    {
+        IOBufAsZeroCopyInputStream zcis(frame);
+        if (!pending->response->ParseFromZeroCopyStream(&zcis)) {
+            LOG_ERR("OnProcessResponse: failed to parse response, rpc_id=%u", rpc_id);
+            pending->done = true;
+            pending->cv.notify_one();
+            return -1;
+        }
     }
 
-    response_attachment_.clear();
-    if (attachment_size > 0)
-    {
-      const char *attachment_start = msg_buf + fixed_rep_head_bytes + payload_length;
-      response_attachment_.append(attachment_start, attachment_size);
+    // Extract attachment (what remains after payload).
+    frame.pop_front(payload_len);
+    if (attachment_size > 0) {
+        pending->attachment.append(frame);
     }
 
-    // Parse payload via ZeroCopyInputStream.
-    IOBuf payload_iobuf;
-    payload_iobuf.append(msg_buf + fixed_rep_head_bytes, payload_length);
-    IOBufAsZeroCopyInputStream zcis(payload_iobuf);
-    CHECK(response->ParseFromZeroCopyStream(&zcis));
-
-    /// NOTE: Return the occupied resources.
-    if (small_msg)
     {
-      uint64_t block_addr = reinterpret_cast<uint64_t>(addr);
-      unique_rsc_->ReturnOneBlock(block_addr);
+        std::lock_guard<std::mutex> lock2(pending->mutex);
+        pending->done = true;
     }
-    else
-    {
-      auto mr = reinterpret_cast<ibv_mr *>(addr);
-      unique_rsc_->ReturnLargeBlock(mr);
-    }
-  }
+    pending->cv.notify_one();
+    return 0;
+}
 
-} // namespace fast
+}  // namespace fast

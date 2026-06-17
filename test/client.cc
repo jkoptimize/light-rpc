@@ -10,13 +10,10 @@ std::string local_ip, server_ip;
 
 void Test(int req_bytes, int num_threads, int sleep_us = 0)
 {
-  std::vector<fast::UniqueResource *> single_res_vec;
-  std::vector<fast::FastChannel *> small_chan_vec;
-  std::vector<EchoService_Stub *> stub_vec;
-  for (int i = 0; i < num_threads; ++i)
-  {
-    single_res_vec.emplace_back(new fast::UniqueResource(local_ip));
-    small_chan_vec.emplace_back(new fast::FastChannel(single_res_vec[i], server_ip, 1024));
+  std::vector<fast::FastChannel*> small_chan_vec;
+  std::vector<EchoService_Stub*> stub_vec;
+  for (int i = 0; i < num_threads; ++i) {
+    small_chan_vec.emplace_back(new fast::FastChannel(server_ip, 1024));
     stub_vec.emplace_back(new EchoService_Stub(small_chan_vec[i]));
   }
 
@@ -60,7 +57,6 @@ void Test(int req_bytes, int num_threads, int sleep_us = 0)
     thread_vec[i].join();
     delete stub_vec[i];
     delete small_chan_vec[i];
-    delete single_res_vec[i];
   }
 
   int64_t total_query = 0, index = 0;

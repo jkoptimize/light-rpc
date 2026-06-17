@@ -1,82 +1,58 @@
 #pragma once
 
-#include "inc/fast_unique.h"
-#include "inc/fast_utils.h"
-#include "inc/fast_iobuf.h"
-#include "inc/fast_define.h"
-#include "build/fast_impl.pb.h"
+#include <condition_variable>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
-#include <boost/asio.hpp>
 #include <google/protobuf/message.h>
 #include <google/protobuf/service.h>
 
-namespace fast
-{
+#include "fast_iobuf.h"
+#include "fast_rdma_endpoint.h"
 
-  /**
-   * This class only supports synchronous RPC calls.
-   * Therefore, rpc_id is redundant here.
-   *
-   * IOBuf attachment:
-   *   User can attach raw binary data (e.g. file content, mmap region) to a
-   *   request via SetRequestAttachment(). The attachment is serialized into the
-   *   IOBuf chain alongside header and payload, then sent via scatter-gather
-   *   RDMA. The IOBuf data is appended to the RPC message after the protobuf
-   *   payload.
-   */
+namespace fast {
 
-  class FastChannel : public google::protobuf::RpcChannel
-  {
-  public:
-    FastChannel(UniqueResource *unique_rsc, std::string dest_ip, int dest_port);
-    virtual ~FastChannel();
-    virtual void CallMethod(const google::protobuf::MethodDescriptor *method,
-                            google::protobuf::RpcController *controller,
-                            const google::protobuf::Message *request,
-                            google::protobuf::Message *response,
-                            google::protobuf::Closure *done) override;
+class FastChannel : public google::protobuf::RpcChannel {
+public:
+    FastChannel(std::string dest_ip, int dest_port);
+    ~FastChannel() override;
 
-    /// @brief Set request attachment. The IOBuf is moved into the channel,
-    ///   cleared after CallMethod returns.
-    void SetRequestAttachment(IOBuf &&attachment)
-    {
-      request_attachment_ = std::move(attachment);
+    void CallMethod(const google::protobuf::MethodDescriptor* method,
+                    google::protobuf::RpcController* controller,
+                    const google::protobuf::Message* request,
+                    google::protobuf::Message* response,
+                    google::protobuf::Closure* done) override;
+
+    void SetRequestAttachment(IOBuf&& attachment) {
+        request_attachment_ = std::move(attachment);
     }
-
-    /// @brief Set request attachment from raw pointer.
-    void SetRequestAttachment(const void *data, size_t len)
-    {
-      request_attachment_.clear();
-      request_attachment_.append(data, len);
+    void SetRequestAttachment(const void* data, size_t len) {
+        request_attachment_.clear();
+        request_attachment_.append(data, len);
     }
+    const IOBuf& ResponseAttachment() const { return response_attachment_; }
 
-    /// @brief Get the attachment IOBuf from the response.
-    const IOBuf &ResponseAttachment() const { return response_attachment_; }
+private:
+    static int OnProcessResponse(IOBuf& frame, void* arg);
 
-  private:
-    /// @brief Scatter-gather send: extract SGE list from IOBuf and send via RDMA.
-    ///   Falls back to copy if IOBuf has too many blocks.
-    void SendIOBufMessage(ibv_qp *qp,
-                          MessageType msg_type,
-                          const IOBuf &msg,
-                          uint32_t total_length,
-                          uint32_t lkey);
+    FastRdmaEndpoint* endpoint_;
 
-    void TryToPollSendWC();
-    void ProcessSendWorkCompletion(ibv_wc &send_wc);
-    ibv_mr *ProcessNotifyMessage(uint64_t block_addr);
-    void ParseAndProcessResponse(void *addr, bool small_msg,
-                                 google::protobuf::Message *response);
-
-    UniqueResource *unique_rsc_;
-    uint32_t rpc_id_; // 1
-
-    /// @brief Attachment provided by user for the next RPC.
-    ///   Cleared after CallMethod returns.
+    uint32_t rpc_id_{1};
     IOBuf request_attachment_;
-
-    /// @brief Attachment parsed from response.
     IOBuf response_attachment_;
-  };
 
-} // namespace fast
+    struct PendingRequest {
+        std::mutex              mutex;
+        std::condition_variable cv;
+        google::protobuf::Message* response = nullptr;
+        bool                    done       = false;
+        bool                    timed_out  = false;
+        IOBuf                   attachment;
+    };
+
+    std::mutex pending_mutex_;
+    std::unordered_map<uint32_t, PendingRequest*> pending_map_;
+};
+
+}  // namespace fast

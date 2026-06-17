@@ -10,6 +10,8 @@
 
 namespace fast {
 
+class FastServer;  // forward declare
+
 // ============================================================
 // HelloMessage — 40B TCP 带外握手消息
 // ============================================================
@@ -76,8 +78,13 @@ public:
 
     // ============ Send (called by KeepWrite thread) ============
     ssize_t CutFromIOBufList(IOBuf** from, size_t ndata);
+    int StartWrite(IOBuf&& data);
     bool IsWritable() const;
     void WaitForWritable();
+
+    // ---- Connection ----
+    void SetRemoteAddr(const std::string& ip, int port);
+    bool IsHandshakeOk() const { return _handshake_ok.load(std::memory_order_acquire); }
 
     // ============ Recv & CQ (called by Poller thread) ============
     static void PollCq(FastRdmaEndpoint* ep);
@@ -103,6 +110,7 @@ public:
     ibv_qp* qp() const { return qp_; }
     int comp_channel_fd() const;
     MessageDispatcher& msg_dispatcher() { return _msg_dispatcher; }
+    FastServer* owner() const { return _owner; }
 
     // ============ Test Helpers ============
     // These exist solely for unit tests to set up flow-control state
@@ -131,6 +139,17 @@ private:
     static int WriteToFd(int fd, const void* data, size_t len);
     bool MoreReadEvents(int* progress);
 
+    // ---- Write queue (ref brpc Socket::StartWrite / KeepWrite / IsWriteComplete) ----
+    struct WriteRequest {
+        IOBuf         data;
+        WriteRequest* next = nullptr;
+    };
+    void KeepWrite(WriteRequest* req);
+    ssize_t DoWrite(WriteRequest* req);
+    bool IsWriteComplete(WriteRequest* old_head, bool singular,
+                         WriteRequest** new_tail);
+    void StartAsyncConnect(WriteRequest* req);
+
     // ---- RDMA resources ----
     ibv_qp*            qp_ = nullptr;
     ibv_cq*            send_cq_ = nullptr;
@@ -139,6 +158,9 @@ private:
 
     // ---- TCP fd used during handshake ----
     int    tcp_fd_ = -1;
+
+    // ---- Server-side owner (nullptr for client) ----
+    FastServer* _owner = nullptr;
 
     // ---- Negotiated params ----
     uint16_t sq_size_{128};
@@ -168,6 +190,14 @@ private:
 
     // ---- PollCq event counter (ref brpc Socket::_nevent) ----
     std::atomic<int>  _nevent{0};
+
+    // ---- Write queue ----
+    std::atomic<WriteRequest*> _write_head{nullptr};
+    std::atomic<bool>         _handshake_ok{false};
+    std::atomic<bool>         _handshake_started{false};
+    WriteRequest*             _pending_keepwrite_req{nullptr};
+    std::string               _remote_ip;
+    int                       _remote_port{0};
 
     // ---- Blocking wait ----
     std::mutex              send_mutex_;

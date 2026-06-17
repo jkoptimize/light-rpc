@@ -9,6 +9,7 @@
 #include "fast_block_pool.h"
 #include "fast_log.h"
 #include "fast_rdma_endpoint.h"
+#include "fast_server.h"
 
 namespace fast {
 
@@ -532,6 +533,176 @@ ssize_t FastRdmaEndpoint::CutFromIOBufList(IOBuf** from, size_t ndata) {
     return static_cast<ssize_t>(total_len);
 }
 
+// ============================================================
+// Write queue — ref brpc Socket::StartWrite / KeepWrite / IsWriteComplete
+// ============================================================
+
+int FastRdmaEndpoint::StartWrite(IOBuf&& data) {
+    auto* req = new WriteRequest;
+    req->data = std::move(data);
+
+    WriteRequest* prev = _write_head.exchange(req, std::memory_order_release);
+    if (prev != nullptr) {
+        req->next = prev;
+        return 0;
+    }
+
+    // We've got the right to write.
+    req->next = nullptr;
+
+    // Not handshake-done yet — start async connect, req stays in queue.
+    if (!_handshake_ok.load(std::memory_order_acquire)) {
+        _pending_keepwrite_req = req;
+        if (!_handshake_started.exchange(true, std::memory_order_acq_rel)) {
+            StartAsyncConnect(req);
+        }
+        return 0;
+    }
+
+    // Try inline write in the calling thread.
+    IOBuf* data_arr[1] = { &req->data };
+    ssize_t nw = CutFromIOBufList(data_arr, 1);
+    if (nw < 0) {
+        if (errno != EAGAIN) {
+            delete req;
+            _write_head.store(nullptr, std::memory_order_release);
+            return -1;
+        }
+    }
+
+    if (IsWriteComplete(req, true, nullptr)) {
+        delete req;
+        return 0;
+    }
+
+    // Not complete — spawn KeepWrite thread.
+    std::thread([this, req]() { KeepWrite(req); }).detach();
+    return 0;
+}
+
+ssize_t FastRdmaEndpoint::DoWrite(WriteRequest* req) {
+    static constexpr size_t DATA_LIST_MAX = 256;
+    IOBuf* data_list[DATA_LIST_MAX];
+    size_t ndata = 0;
+    for (WriteRequest* p = req; p != nullptr && ndata < DATA_LIST_MAX;
+         p = p->next) {
+        data_list[ndata++] = &p->data;
+    }
+    return CutFromIOBufList(data_list, ndata);
+}
+
+bool FastRdmaEndpoint::IsWriteComplete(WriteRequest* old_head,
+                                        bool singular_node,
+                                        WriteRequest** new_tail) {
+    // old_head->next must be NULL.
+    WriteRequest* new_head = old_head;
+    WriteRequest* desired = nullptr;
+    bool no_more = true;
+
+    if (!old_head->data.empty() || !singular_node) {
+        desired = old_head;
+        no_more = false;
+    }
+
+    if (_write_head.compare_exchange_strong(new_head, desired,
+            std::memory_order_acquire)) {
+        // No new requests arrived.
+        if (new_tail) *new_tail = old_head;
+        return no_more;
+    }
+
+    // New requests arrived — reverse the list to maintain FIFO order.
+    WriteRequest* tail = nullptr;
+    WriteRequest* p = new_head;
+    do {
+        WriteRequest* saved = p->next;
+        p->next = tail;
+        tail = p;
+        p = saved;
+    } while (p != old_head);
+
+    // Link old chain with new chain.
+    old_head->next = tail;
+    if (new_tail) *new_tail = new_head;
+    return false;
+}
+
+void FastRdmaEndpoint::KeepWrite(WriteRequest* req) {
+    WriteRequest* cur_tail = nullptr;
+
+    do {
+        // req was written, skip it.
+        if (req->next != nullptr && req->data.empty()) {
+            WriteRequest* done = req;
+            req = req->next;
+            delete done;
+        }
+
+        const ssize_t nw = DoWrite(req);
+        if (nw < 0 && errno != EAGAIN) {
+            break;  // fatal error
+        }
+
+        // Release fully-written requests until the last one or non-empty data.
+        while (req->next != nullptr && req->data.empty()) {
+            WriteRequest* done = req;
+            req = req->next;
+            delete done;
+        }
+
+        if (nw <= 0) {
+            WaitForWritable();
+        }
+
+        if (cur_tail == nullptr) {
+            for (cur_tail = req; cur_tail->next != nullptr;
+                 cur_tail = cur_tail->next);
+        }
+
+        // Return when there's no more WriteRequests and req is completely written.
+        if (IsWriteComplete(cur_tail, (req == cur_tail), &cur_tail)) {
+            delete req;
+            return;
+        }
+    } while (true);
+
+    // Error: release all remaining requests.
+    while (req != nullptr) {
+        WriteRequest* next = req->next;
+        delete req;
+        req = next;
+    }
+}
+
+void FastRdmaEndpoint::SetRemoteAddr(const std::string& ip, int port) {
+    _remote_ip   = ip;
+    _remote_port = port;
+}
+
+void FastRdmaEndpoint::StartAsyncConnect(WriteRequest* /*req*/) {
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(static_cast<uint16_t>(_remote_port));
+    inet_pton(AF_INET, _remote_ip.c_str(), &addr.sin_addr);
+
+    int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(sock_fd >= 0);
+    fcntl(sock_fd, F_SETFL, O_NONBLOCK);
+    fcntl(sock_fd, F_SETFD, FD_CLOEXEC);
+
+    int ret = connect(sock_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    if (ret < 0 && errno != EINPROGRESS) {
+        close(sock_fd);
+        LOG_ERR("Fail to connect to %s:%d", _remote_ip.c_str(), _remote_port);
+        return;
+    }
+
+    tcp_fd_ = sock_fd;
+    EventDispatcher::GetInstance().RegisterEvent(
+        sock_fd, OnClientHandshake, nullptr, this, EPOLLOUT | EPOLLET);
+    LOG_INFO("Async connect to %s:%d fd=%d", _remote_ip.c_str(), _remote_port, sock_fd);
+}
+
 // ---------------------------------------------------------------------------
 // CQ
 // ---------------------------------------------------------------------------
@@ -573,7 +744,8 @@ int FastRdmaEndpoint::GetAndAckEvents() {
 void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t events) {
     if (events & (EPOLLERR | EPOLLHUP)) return;
 
-    int listen_fd = *static_cast<int*>(user_data);
+    auto* server = static_cast<FastServer*>(user_data);
+    int listen_fd = server->listen_fd();
     while (true) {
         int client_fd = accept(listen_fd, nullptr, nullptr);
         if (client_fd < 0) {
@@ -585,6 +757,9 @@ void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t events) {
 
         auto* ep = new FastRdmaEndpoint();
         ep->tcp_fd_ = client_fd;
+        ep->_owner  = server;
+        ep->msg_dispatcher().SetMode(DispatcherMode::kServer);
+        ep->msg_dispatcher().SetHandler(FastServer::OnProcessRequest, ep);
         EventDispatcher::GetInstance().RegisterEvent(
             client_fd, OnServerHandshake, nullptr, ep, EPOLLIN | EPOLLET);
     }
@@ -603,7 +778,14 @@ void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t events) {
     std::thread([ep, fd]() {
         int ret = ProcessHandshakeAtServer(ep, fd);
         close(fd);
-        if (ret != 0) delete ep;
+        if (ret == 0) {
+            ep->_handshake_ok.store(true, std::memory_order_release);
+            if (ep->owner()) {
+                ep->owner()->AddEndpoint(ep->qp()->qp_num, ep);
+            }
+        } else {
+            delete ep;
+        }
     }).detach();
 }
 
@@ -632,7 +814,16 @@ void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
     std::thread([ep, fd]() {
         int ret = ProcessHandshakeAtClient(ep, fd);
         close(fd);
-        if (ret != 0) delete ep;
+        if (ret == 0) {
+            // Handshake succeeded — drain pending write queue.
+            ep->_handshake_ok.store(true, std::memory_order_release);
+            WriteRequest* req = ep->_pending_keepwrite_req;
+            if (req != nullptr) {
+                std::thread([ep, req]() { ep->KeepWrite(req); }).detach();
+            }
+        } else {
+            delete ep;
+        }
     }).detach();
 }
 
