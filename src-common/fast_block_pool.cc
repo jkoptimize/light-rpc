@@ -130,6 +130,7 @@ namespace fast
             LOG(ERROR) << "Block pool has already been initialized.";
             return false;
         }
+        g_info = new GlobalInfo();
         for (int i = 0; i < BLOCK_SIZE_COUNT; i++)
         {
             g_info->idle_list[i].resize(RDMA_MEMPOOL_BUCKETS, nullptr);

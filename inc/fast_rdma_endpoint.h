@@ -208,6 +208,14 @@ private:
     int sq_unsignaled_{0};
     int unsolicited_{0};
     int accumulated_ack_{0};
+
+    // ---- CQ event counters (ref brpc RdmaEndpoint) ----
+    int send_cq_events{0};
+    int recv_cq_events{0};
+
+    // ---- Shutdown ----
+    std::atomic<bool> _stop{false};
+    std::atomic<int>  _running_threads{0};
 };
 
 }  // namespace fast

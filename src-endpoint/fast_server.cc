@@ -37,6 +37,7 @@ void FastServer::AddService(ServiceOwnership ownership,
 }
 
 void FastServer::BuildAndStart() {
+    FastRdmaEndpoint::GlobalInitialize();
     listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
     CHECK(listen_fd_ >= 0);
 

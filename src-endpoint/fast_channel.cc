@@ -16,6 +16,7 @@ static const uint32_t kFixed32Bytes = 4;
 // ============================================================
 
 FastChannel::FastChannel(std::string dest_ip, int dest_port) {
+    FastRdmaEndpoint::GlobalInitialize();
     endpoint_ = new FastRdmaEndpoint();
     endpoint_->SetRemoteAddr(dest_ip, dest_port);
     endpoint_->msg_dispatcher().SetMode(DispatcherMode::kClient);
@@ -53,10 +54,14 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     uint32_t payload_len = request->ByteSizeLong();
     uint32_t total_len   = 2 * kFixed32Bytes + meta_len + payload_len + attachment_len;
 
-    // ---- 2. Build IOBuf frame: [total_len][meta_len][meta][payload][attachment] ----
+    // ---- 2. Build IOBuf frame: [total_len(BE)][meta_len(BE)][meta][payload][attachment] ----
+    // Frame header fields are in network byte order (big-endian), matching
+    // CutInputMessage and OnProcessRequest which decode with ntohl.
     IOBuf frame;
-    frame.append(&total_len, kFixed32Bytes);
-    frame.append(&meta_len, kFixed32Bytes);
+    uint32_t be_total_len = htonl(total_len);
+    uint32_t be_meta_len = htonl(meta_len);
+    frame.append(&be_total_len, kFixed32Bytes);
+    frame.append(&be_meta_len, kFixed32Bytes);
 
     {
         IOBufAsZeroCopyOutputStream zcos(&frame);

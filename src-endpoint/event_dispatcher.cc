@@ -56,15 +56,11 @@ int EventDispatcher::RegisterEvent(int fd, InputCallback in_cb, OutputCallback o
 }
 
 int EventDispatcher::UnregisterEvent(int fd) {
+    // Only remove from epoll.  EventContext is freed in ~EventDispatcher().
+    // This avoids use-after-free with the epoll loop which may have already
+    // fetched events for this fd in the current batch.
     epoll_event evt = {};
-    int ret = epoll_ctl(_epfd, EPOLL_CTL_DEL, fd, &evt);
-
-    auto it = _fd_map.find(fd);
-    if (it != _fd_map.end()) {
-        delete it->second;
-        _fd_map.erase(it);
-    }
-    return ret;
+    return epoll_ctl(_epfd, EPOLL_CTL_DEL, fd, &evt);
 }
 
 void EventDispatcher::RunEpollLoop() {

@@ -3,6 +3,7 @@
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <cstring>
+#include <mutex>
 #include <thread>
 
 #include "event_dispatcher.h"
@@ -24,28 +25,36 @@ static int          g_rdma_max_sge = 32;
 static uint32_t     g_rdma_recv_block_size = 0;
 static uint32_t     g_rdma_zerocopy_min_size = 512;
 
+static std::once_flag g_init_once;
+
 void FastRdmaEndpoint::GlobalInitialize() {
-    ibv_device** devs = ibv_get_device_list(nullptr);
-    CHECK(devs != nullptr && devs[0] != nullptr);
-    g_ctx = ibv_open_device(devs[0]);
-    CHECK(g_ctx != nullptr);
-    ibv_free_device_list(devs);
+    std::call_once(g_init_once, [] {
+        ibv_device** devs = ibv_get_device_list(nullptr);
+        CHECK(devs != nullptr && devs[0] != nullptr);
+        g_ctx = ibv_open_device(devs[0]);
+        CHECK(g_ctx != nullptr);
+        ibv_free_device_list(devs);
 
-    g_pd = ibv_alloc_pd(g_ctx);
-    CHECK(g_pd != nullptr);
+        g_pd = ibv_alloc_pd(g_ctx);
+        CHECK(g_pd != nullptr);
 
-    ibv_device_attr attr;
-    CHECK(ibv_query_device(g_ctx, &attr) == 0);
-    g_rdma_max_sge = attr.max_sge;
+        ibv_device_attr attr;
+        CHECK(ibv_query_device(g_ctx, &attr) == 0);
+        g_rdma_max_sge = attr.max_sge;
 
-    ibv_port_attr port_attr;
-    CHECK(ibv_query_port(g_ctx, 1, &port_attr) == 0);
-    g_lid = port_attr.lid;
+        ibv_port_attr port_attr;
+        CHECK(ibv_query_port(g_ctx, 1, &port_attr) == 0);
+        g_lid = port_attr.lid;
 
-    // RoCE: take GID at index 0
-    CHECK(ibv_query_gid(g_ctx, 1, 0, &g_gid) == 0);
+        // RoCE: take GID at index 0
+        CHECK(ibv_query_gid(g_ctx, 1, 0, &g_gid) == 0);
 
-    g_rdma_recv_block_size = GetBlockSize(0) - RdmaIOBuf::IOBUF_BLOCK_HEADER_LEN;
+        g_rdma_recv_block_size = GetBlockSize(0) - RdmaIOBuf::IOBUF_BLOCK_HEADER_LEN;
+
+        // Also initialize the RDMA block pool (used by IOBuf)
+        SetGlobalPD(g_pd);
+        CHECK(InitBlockPool());
+    });
 }
 
 // ============================================================
@@ -107,7 +116,22 @@ bool HelloNegotiationValid(const HelloMessage& msg) {
 FastRdmaEndpoint::FastRdmaEndpoint() = default;
 
 FastRdmaEndpoint::~FastRdmaEndpoint() {
+    _stop.store(true, std::memory_order_relaxed);
+    send_cv_.notify_all();
+
+    // Unregister comp_channel from EventDispatcher to prevent new PollCq threads.
+    if (comp_channel_ != nullptr) {
+        EventDispatcher::GetInstance().UnregisterEvent(comp_channel_->fd);
+    }
+
+    // Destroy RDMA resources first — in-flight operations will fail and
+    // cause KeepWrite / PollCq threads to exit their loops naturally.
     DeallocateResources();
+
+    // Wait for all detached threads to exit.
+    while (_running_threads.load(std::memory_order_relaxed) > 0) {
+        std::this_thread::yield();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +175,9 @@ bool FastRdmaEndpoint::IsWritable() const {
 
 void FastRdmaEndpoint::WaitForWritable() {
     std::unique_lock<std::mutex> lock(send_mutex_);
-    send_cv_.wait(lock, [this] { return IsWritable(); });
+    send_cv_.wait(lock, [this] {
+        return IsWritable() || _stop.load(std::memory_order_relaxed);
+    });
 }
 
 int FastRdmaEndpoint::SendAck(int num) {
@@ -576,7 +602,11 @@ int FastRdmaEndpoint::StartWrite(IOBuf&& data) {
     }
 
     // Not complete — spawn KeepWrite thread.
-    std::thread([this, req]() { KeepWrite(req); }).detach();
+    _running_threads.fetch_add(1, std::memory_order_relaxed);
+    std::thread([this, req]() {
+        KeepWrite(req);
+        _running_threads.fetch_sub(1, std::memory_order_relaxed);
+    }).detach();
     return 0;
 }
 
@@ -631,6 +661,8 @@ void FastRdmaEndpoint::KeepWrite(WriteRequest* req) {
     WriteRequest* cur_tail = nullptr;
 
     do {
+        if (_stop.load(std::memory_order_relaxed)) break;
+
         // req was written, skip it.
         if (req->next != nullptr && req->data.empty()) {
             WriteRequest* done = req;
@@ -652,6 +684,7 @@ void FastRdmaEndpoint::KeepWrite(WriteRequest* req) {
 
         if (nw <= 0) {
             WaitForWritable();
+            if (_stop.load(std::memory_order_relaxed)) break;
         }
 
         if (cur_tail == nullptr) {
@@ -713,7 +746,6 @@ int FastRdmaEndpoint::comp_channel_fd() const {
 
 int FastRdmaEndpoint::GetAndAckEvents() {
     static const int MAX_CQ_EVENTS = 128;
-    int send_events = 0, recv_events = 0;
     while (true) {
         ibv_cq* cq = nullptr;
         void*   ctx = nullptr;
@@ -722,18 +754,19 @@ int FastRdmaEndpoint::GetAndAckEvents() {
             LOG_ERR("Fail to get cq event");
             return -1;
         }
-        if (cq == send_cq_)       ++send_events;
-        else if (cq == recv_cq_)  ++recv_events;
+        if (cq == send_cq_)       ++send_cq_events;
+        else if (cq == recv_cq_)  ++recv_cq_events;
         else LOG_ERR("Unknown CQ event");
     }
-    if (send_events >= MAX_CQ_EVENTS) {
-        ibv_ack_cq_events(send_cq_, send_events);
-        send_events = 0;
+    if (send_cq_events >= MAX_CQ_EVENTS) {
+        ibv_ack_cq_events(send_cq_, send_cq_events);
+        send_cq_events = 0;
     }
-    if (recv_events >= MAX_CQ_EVENTS) {
-        ibv_ack_cq_events(recv_cq_, recv_events);
-        recv_events = 0;
+    if (recv_cq_events >= MAX_CQ_EVENTS) {
+        ibv_ack_cq_events(recv_cq_, recv_cq_events);
+        recv_cq_events = 0;
     }
+
     return 0;
 }
 
@@ -775,6 +808,7 @@ void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t events) {
         return;
     }
     EventDispatcher::GetInstance().UnregisterEvent(fd);
+    ep->_running_threads.fetch_add(1, std::memory_order_relaxed);
     std::thread([ep, fd]() {
         int ret = ProcessHandshakeAtServer(ep, fd);
         close(fd);
@@ -786,6 +820,7 @@ void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t events) {
         } else {
             delete ep;
         }
+        ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
     }).detach();
 }
 
@@ -811,6 +846,7 @@ void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
     }
 
     EventDispatcher::GetInstance().UnregisterEvent(fd);
+    ep->_running_threads.fetch_add(1, std::memory_order_relaxed);
     std::thread([ep, fd]() {
         int ret = ProcessHandshakeAtClient(ep, fd);
         close(fd);
@@ -819,11 +855,16 @@ void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
             ep->_handshake_ok.store(true, std::memory_order_release);
             WriteRequest* req = ep->_pending_keepwrite_req;
             if (req != nullptr) {
-                std::thread([ep, req]() { ep->KeepWrite(req); }).detach();
+                ep->_running_threads.fetch_add(1, std::memory_order_relaxed);
+                std::thread([ep, req]() {
+                    ep->KeepWrite(req);
+                    ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
+                }).detach();
             }
         } else {
             delete ep;
         }
+        ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
     }).detach();
 }
 
@@ -833,14 +874,21 @@ void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
 
 void FastRdmaEndpoint::OnCompChannelEvent(void* user_data, uint32_t /*events*/) {
     auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
+    if (ep->_stop.load(std::memory_order_relaxed)) return;
     // Only start a new PollCq thread if no thread is already running.
     if (ep->_nevent.fetch_add(1, std::memory_order_acquire) == 0) {
-        std::thread t(PollCq, ep);
+        ep->_running_threads.fetch_add(1, std::memory_order_relaxed);
+        std::thread t([](FastRdmaEndpoint* e) {
+            PollCq(e);
+            e->_running_threads.fetch_sub(1, std::memory_order_relaxed);
+        }, ep);
         t.detach();
     }
 }
 
 void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
+    if (ep->_stop.load(std::memory_order_relaxed)) return;
+
     // 1. Drain and ack comp_channel events
     if (ep->GetAndAckEvents() < 0) return;
 
@@ -852,6 +900,8 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
     int progress = PROGRESS_INIT;
 
     while (true) {
+        if (ep->_stop.load(std::memory_order_relaxed)) return;
+
         int cnt = ibv_poll_cq(cq, 32, wc);
         if (cnt < 0) return;
         if (cnt == 0) {
