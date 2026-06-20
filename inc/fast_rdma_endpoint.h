@@ -148,7 +148,7 @@ private:
     ssize_t DoWrite(WriteRequest* req);
     bool IsWriteComplete(WriteRequest* old_head, bool singular,
                          WriteRequest** new_tail);
-    void StartAsyncConnect(WriteRequest* req);
+    int StartAsyncConnect();
 
     // ---- RDMA resources ----
     ibv_qp*            qp_ = nullptr;
@@ -194,7 +194,6 @@ private:
     // ---- Write queue ----
     std::atomic<WriteRequest*> _write_head{nullptr};
     std::atomic<bool>         _handshake_ok{false};
-    std::atomic<bool>         _handshake_started{false};
     WriteRequest*             _pending_keepwrite_req{nullptr};
     std::string               _remote_ip;
     int                       _remote_port{0};

@@ -36,7 +36,7 @@ FastChannel::~FastChannel() {
 }
 
 void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
-                              google::protobuf::RpcController* /*controller*/,
+                              google::protobuf::RpcController* controller,
                               const google::protobuf::Message* request,
                               google::protobuf::Message* response,
                               google::protobuf::Closure* /*done*/) {
@@ -90,7 +90,15 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     }
 
     // ---- 4. Non-blocking enqueue ----
-    endpoint_->StartWrite(std::move(frame));
+    if (endpoint_->StartWrite(std::move(frame)) < 0) {
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex_);
+            pending_map_.erase(rpc_id);
+        }
+        LOG_ERR("CallMethod: StartWrite failed, rpc_id=%u", rpc_id);
+        if (controller) controller->SetFailed("StartWrite failed");
+        return;
+    }
 
     // ---- 5. Block waiting for response (1 min timeout) ----
     {
@@ -100,11 +108,31 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
         if (!ok) {
             pending.timed_out = true;
             LOG_ERR("CallMethod timeout, rpc_id=%u", rpc_id);
+            if (controller) controller->SetFailed("RPC timeout");
         }
     }
 
     if (!pending.timed_out) {
-        response_attachment_ = std::move(pending.attachment);
+        if (pending.error_code != ErrorCode::ERR_SUCCESS) {
+            if (controller) {
+                switch (pending.error_code) {
+                case ErrorCode::ERR_UNKNOWN_SERVICE:
+                    controller->SetFailed("Server: unknown service"); break;
+                case ErrorCode::ERR_UNKNOWN_METHOD:
+                    controller->SetFailed("Server: unknown method"); break;
+                case ErrorCode::ERR_BAD_REQUEST:
+                    controller->SetFailed("Server: bad request"); break;
+                case ErrorCode::ERR_BAD_RESPONSE:
+                    controller->SetFailed("Client: response parse error"); break;
+                case ErrorCode::ERR_INTERNAL:
+                    controller->SetFailed("Server: internal error"); break;
+                default:
+                    controller->SetFailed("Unknown error"); break;
+                }
+            }
+        } else {
+            response_attachment_ = std::move(pending.attachment);
+        }
     }
 
     // ---- 6. Cleanup ----
@@ -121,12 +149,16 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
 int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
     auto* self = static_cast<FastChannel*>(arg);
 
-    // Frame format: [total_len:4B][rpc_id:4B][attachment_size:4B][payload][attachment]
+    // Frame format: [total_len:4B][rpc_id:4B][error_code:4B][attachment_size:4B][payload][attachment]
     // total_len was consumed by CutInputMessage; skip it.
     frame.pop_front(kFixed32Bytes);
 
     // Parse rpc_id (big-endian).
     uint32_t rpc_id = ntohl(*static_cast<const uint32_t*>(frame.fetch1()));
+    frame.pop_front(kFixed32Bytes);
+
+    // Parse error_code.
+    uint32_t error_code = ntohl(*static_cast<const uint32_t*>(frame.fetch1()));
     frame.pop_front(kFixed32Bytes);
 
     // Parse attachment_size.
@@ -143,13 +175,30 @@ int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
     }
     PendingRequest* pending = it->second;
 
+    // Validate frame boundary.
+    if (attachment_size > frame.length()) {
+        LOG_ERR("OnProcessResponse: frame overflow, rpc_id=%u", rpc_id);
+        pending->error_code = ErrorCode::ERR_BAD_RESPONSE;
+        pending->done = true;
+        pending->cv.notify_one();
+        return -1;
+    }
     uint32_t payload_len = frame.length() - attachment_size;
+
+    // Server-reported error: skip payload parsing, notify immediately.
+    if (error_code != ErrorCode::ERR_SUCCESS) {
+        pending->error_code = error_code;
+        pending->done = true;
+        pending->cv.notify_one();
+        return -1;
+    }
 
     // Parse protobuf payload.
     {
         IOBufAsZeroCopyInputStream zcis(frame);
         if (!pending->response->ParseFromZeroCopyStream(&zcis)) {
             LOG_ERR("OnProcessResponse: failed to parse response, rpc_id=%u", rpc_id);
+            pending->error_code = ErrorCode::ERR_BAD_RESPONSE;
             pending->done = true;
             pending->cv.notify_one();
             return -1;

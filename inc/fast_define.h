@@ -31,6 +31,17 @@ namespace fast
     FAST_NotifyMessage = 2
   };
 
+  // Response error codes carried in the error_code field of the response frame.
+  enum ErrorCode : uint32_t
+  {
+    ERR_SUCCESS         = 0,
+    ERR_UNKNOWN_SERVICE = 1,
+    ERR_UNKNOWN_METHOD  = 2,
+    ERR_BAD_REQUEST     = 3,  // meta / payload parse failure on server
+    ERR_BAD_RESPONSE    = 4,  // response parse failure on client (set locally)
+    ERR_INTERNAL        = 5,
+  };
+
   enum AddressType
   {
     BLOCK_ADDRESS,

@@ -7,6 +7,7 @@
 #include <google/protobuf/message.h>
 #include <google/protobuf/service.h>
 
+#include "fast_define.h"
 #include "fast_iobuf.h"
 #include "fast_rdma_endpoint.h"
 
@@ -23,10 +24,11 @@ struct ServiceInfo {
 };
 
 struct CallBackArgs {
-    uint32_t            rpc_id;
-    FastRdmaEndpoint*   endpoint;
-    google::protobuf::Message* request;
-    google::protobuf::Message* response;
+    uint32_t            rpc_id{0};
+    uint32_t            error_code{0};
+    FastRdmaEndpoint*   endpoint{nullptr};
+    google::protobuf::Message* request{nullptr};
+    google::protobuf::Message* response{nullptr};
     IOBuf               request_attachment;
     IOBuf               response_attachment;
 };
@@ -46,6 +48,8 @@ public:
     static int OnProcessRequest(IOBuf& frame, void* arg);
 
 private:
+    static void SendErrorResponse(FastRdmaEndpoint* ep, uint32_t rpc_id,
+                                   ErrorCode error_code);
     void ReturnRPCResponse(CallBackArgs args);
 
     std::string local_ip_;

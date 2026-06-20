@@ -577,10 +577,14 @@ int FastRdmaEndpoint::StartWrite(IOBuf&& data) {
     req->next = nullptr;
 
     // Not handshake-done yet — start async connect, req stays in queue.
+    // _pending_keepwrite_req != nullptr already guards against duplicate connects.
     if (!_handshake_ok.load(std::memory_order_acquire)) {
         _pending_keepwrite_req = req;
-        if (!_handshake_started.exchange(true, std::memory_order_acq_rel)) {
-            StartAsyncConnect(req);
+        if (StartAsyncConnect() < 0) {
+            delete req;
+            _pending_keepwrite_req = nullptr;
+            _write_head.store(nullptr, std::memory_order_release);
+            return -1;
         }
         return 0;
     }
@@ -712,7 +716,7 @@ void FastRdmaEndpoint::SetRemoteAddr(const std::string& ip, int port) {
     _remote_port = port;
 }
 
-void FastRdmaEndpoint::StartAsyncConnect(WriteRequest* /*req*/) {
+int FastRdmaEndpoint::StartAsyncConnect() {
     sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_port   = htons(static_cast<uint16_t>(_remote_port));
@@ -727,13 +731,14 @@ void FastRdmaEndpoint::StartAsyncConnect(WriteRequest* /*req*/) {
     if (ret < 0 && errno != EINPROGRESS) {
         close(sock_fd);
         LOG_ERR("Fail to connect to %s:%d", _remote_ip.c_str(), _remote_port);
-        return;
+        return -1;
     }
 
     tcp_fd_ = sock_fd;
     EventDispatcher::GetInstance().RegisterEvent(
         sock_fd, OnClientHandshake, nullptr, this, EPOLLOUT | EPOLLET);
     LOG_INFO("Async connect to %s:%d fd=%d", _remote_ip.c_str(), _remote_port, sock_fd);
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -783,6 +788,8 @@ void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t events) {
         int client_fd = accept(listen_fd, nullptr, nullptr);
         if (client_fd < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            if (errno == EINTR) continue;
+            LOG_ERR("accept error, fd=%d errno=%d", listen_fd, errno);
             return;
         }
         fcntl(client_fd, F_SETFL, O_NONBLOCK);
@@ -801,13 +808,14 @@ void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t events) {
 void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t events) {
     auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
     int fd = ep->tcp_fd_;
+
+    EventDispatcher::GetInstance().UnregisterEvent(fd);
     if (events & (EPOLLERR | EPOLLHUP)) {
-        EventDispatcher::GetInstance().UnregisterEvent(fd);
         close(fd);
         delete ep;
         return;
     }
-    EventDispatcher::GetInstance().UnregisterEvent(fd);
+
     ep->_running_threads.fetch_add(1, std::memory_order_relaxed);
     std::thread([ep, fd]() {
         int ret = ProcessHandshakeAtServer(ep, fd);
@@ -828,10 +836,10 @@ void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
     auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
     int fd = ep->tcp_fd_;
 
+    EventDispatcher::GetInstance().UnregisterEvent(fd);
     if (events & (EPOLLERR | EPOLLHUP)) {
-        EventDispatcher::GetInstance().UnregisterEvent(fd);
         close(fd);
-        delete ep;
+        LOG_ERR("Client handshake error on fd=%d (EPOLLERR/EPOLLHUP)", fd);
         return;
     }
 
@@ -839,13 +847,11 @@ void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
     int so_err = 0;
     socklen_t len = sizeof(so_err);
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &len) < 0 || so_err != 0) {
-        EventDispatcher::GetInstance().UnregisterEvent(fd);
         close(fd);
-        delete ep;
+        LOG_ERR("Client handshake connect error on fd=%d, so_err=%d", fd, so_err);
         return;
     }
 
-    EventDispatcher::GetInstance().UnregisterEvent(fd);
     ep->_running_threads.fetch_add(1, std::memory_order_relaxed);
     std::thread([ep, fd]() {
         int ret = ProcessHandshakeAtClient(ep, fd);
@@ -862,7 +868,7 @@ void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
                 }).detach();
             }
         } else {
-            delete ep;
+            LOG_ERR("Client handshake failed on fd=%d", fd);
         }
         ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
     }).detach();
@@ -962,7 +968,7 @@ ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {
             return 0;
         }
         // Signaled batch send: release sbuf slots, restore SQ window
-        for (uint16_t i = 0; i < wc.wr_id; ++i) {
+        for (int i = 0; i < static_cast<int>(wc.wr_id); ++i) {
             if (sq_sent_ < sbuf_.size()) {
                 sbuf_[sq_sent_++].clear();
                 if (sq_sent_ == sbuf_.size()) sq_sent_ = 0;
