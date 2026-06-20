@@ -38,7 +38,7 @@ private:
 
     FastRdmaEndpoint* endpoint_;
 
-    uint32_t rpc_id_{1};
+    std::atomic<uint32_t> rpc_id_{1};
     IOBuf request_attachment_;
     IOBuf response_attachment_;
 

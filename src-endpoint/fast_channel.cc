@@ -41,7 +41,7 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
                               google::protobuf::Message* response,
                               google::protobuf::Closure* /*done*/) {
     // ---- 1. Build MetaDataOfRequest ----
-    uint32_t rpc_id = rpc_id_++;
+    uint32_t rpc_id = rpc_id_.fetch_add(1, std::memory_order_relaxed);
     uint32_t attachment_len = request_attachment_.length();
 
     MetaDataOfRequest meta;

@@ -476,17 +476,22 @@ ssize_t FastRdmaEndpoint::CutFromIOBufList(IOBuf** from, size_t ndata) {
     uint32_t remote_rq_wnd = remote_rq_window_size_.load(std::memory_order_relaxed);
     uint32_t sq_wnd        = sq_window_size_.load(std::memory_order_relaxed);
 
-    if (remote_rq_wnd == 0 || sq_wnd == 0) {
-        errno = EAGAIN;
-        return -1;
-    }
-
     size_t   total_len = 0;
     size_t   current   = 0;
     ibv_send_wr wr;
     ibv_sge sglist[g_rdma_max_sge];
 
     while (current < ndata) {
+        if (remote_rq_wnd == 0 || sq_wnd == 0) {
+            // There is no space left in SQ or remote RQ.
+            if (total_len > 0) {
+                break;
+            } else {
+                errno = EAGAIN;
+                return -1;
+            }
+        }
+
         IOBuf* to = &sbuf_[sq_current_];
         size_t this_len = 0;
 
