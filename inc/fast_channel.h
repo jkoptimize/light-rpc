@@ -35,8 +35,13 @@ public:
 
 private:
     static int OnProcessResponse(IOBuf& frame, void* arg);
+    void WaitForLargeWritable();
 
     FastRdmaEndpoint* endpoint_;
+
+    std::mutex              large_mutex_;
+    std::condition_variable large_cv_;
+    bool                    closed_{false};
 
     std::atomic<uint32_t> rpc_id_{1};
     IOBuf request_attachment_;
@@ -48,6 +53,7 @@ private:
         google::protobuf::Message* response   = nullptr;
         bool                    done         = false;
         bool                    timed_out    = false;
+        bool                    is_large     = false;
         uint32_t                error_code   = 0;
         IOBuf                   attachment;
     };

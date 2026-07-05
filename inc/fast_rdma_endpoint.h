@@ -250,10 +250,12 @@ private:
     std::mutex large_frame_mutex_;
     std::unordered_map<uint32_t, IOBuf> pending_large_frames_;
 
-    // ---- LargeBlock tracking ----
+public:
+    // ---- LargeBlock tracking (FastChannel::OnProcessResponse needs access) ----
     std::mutex pending_large_mutex_;
     std::unordered_map<uint32_t, ibv_mr*> pending_large_map_;  // key = rkey
 
+private:
     // ---- Shutdown ----
     std::atomic<bool> _stop{false};
     std::atomic<int>  _running_threads{0};
