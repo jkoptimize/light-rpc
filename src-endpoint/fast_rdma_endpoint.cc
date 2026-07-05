@@ -1058,6 +1058,11 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
 
     if (ep->GetAndAckEvents() < 0) return;
 
+    // CQ order: recv_cq → data_recv_cq → send_cq → data_send_cq.
+    // Per brpc semantics: stay on the same CQ while it has data;
+    // advance to next CQ only when the current one is drained.
+    int phase = 0;  // 0=recv_cq, 1=data_recv_cq, 2=send_cq, 3=data_send_cq
+    ibv_cq* cqs[4] = {ep->recv_cq_, ep->data_recv_cq_, ep->send_cq_, ep->data_send_cq_};
     bool notified = false;
     ibv_wc wc[32];
     int progress = PROGRESS_INIT;
@@ -1065,30 +1070,46 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
     while (true) {
         if (ep->_stop.load(std::memory_order_relaxed)) return;
 
-        bool any_recv = false;
+        int cnt = ibv_poll_cq(cqs[phase], 32, wc);
+        if (cnt < 0) return;
 
-        // ---- Phase 1: all recv ----
-        {
-            int cnt = ibv_poll_cq(ep->recv_cq_, 32, wc);
-            if (cnt < 0) return;
-            for (int i = 0; i < cnt; ++i) {
-                if (wc[i].status != IBV_WC_SUCCESS) continue;
-                ep->HandleCompletion(wc[i]);  // read_buf_ accumulation + flow control
+        if (cnt == 0) {
+            if (phase < 3) {
+                phase++;
+                continue;
             }
-            if (cnt > 0) any_recv = true;
+            // All 4 CQs drained.
+            if (!notified) {
+                ibv_req_notify_cq(ep->send_cq_, 0);
+                ibv_req_notify_cq(ep->recv_cq_, 1);
+                ibv_req_notify_cq(ep->data_send_cq_, 0);
+                ibv_req_notify_cq(ep->data_recv_cq_, 1);
+                notified = true;
+                continue;  // re-poll data_send_cq after arm
+            }
+            // Still empty after arm — check for new events.
+            if (!ep->MoreReadEvents(&progress)) break;
+            if (ep->GetAndAckEvents() < 0) return;
+            phase = 0;
+            notified = false;
+            continue;
         }
 
-        {
-            int cnt = ibv_poll_cq(ep->data_recv_cq_, 32, wc);
-            if (cnt < 0) return;
-            for (int i = 0; i < cnt; ++i) {
+        notified = false;
+
+        for (int i = 0; i < cnt; ++i) {
+            switch (phase) {
+            case 0:  // control recv_cq
+                if (wc[i].status != IBV_WC_SUCCESS) continue;
+                ep->HandleCompletion(wc[i]);
+                break;
+            case 1: {  // data_recv_cq
                 if (wc[i].status != IBV_WC_SUCCESS) {
                     LOG_ERR("data_recv_cq WC error: opcode=%d status=%d(%s) wr_id=%lu",
                             wc[i].opcode, wc[i].status,
                             ibv_wc_status_str(wc[i].status), wc[i].wr_id);
                     continue;
                 }
-                // inline Data QP recv handling
                 uint32_t rkey = ntohl(wc[i].imm_data);
                 {
                     std::lock_guard<std::mutex> lock(ep->pending_large_mutex_);
@@ -1096,7 +1117,6 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                     if (it != ep->pending_large_map_.end()) {
                         ibv_mr* mr = it->second;
                         ep->pending_large_map_.erase(it);
-                        // Zero-copy wrap LargeBlock as IOBuf and merge into read_buf_
                         IOBuf frame;
                         frame.append_user_data_with_meta(
                             mr->addr, wc[i].byte_len,
@@ -1106,33 +1126,13 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                         LOG_ERR("pending_large_map_ find failed for rkey=%u", rkey);
                     }
                 }
-                // Do not re-post recv
+                break;
             }
-            if (cnt > 0) any_recv = true;
-        }
-
-        // Unified dispatch (Control + Data frames)
-        if (any_recv) {
-            ep->_msg_dispatcher.ProcessNewMessage(ep->read_buf_);
-            continue;  // Data arrived, continue recv phase
-        }
-
-        // ---- Phase 2: all send ----
-        bool any_send = false;
-        {
-            int cnt = ibv_poll_cq(ep->send_cq_, 32, wc);
-            if (cnt < 0) return;
-            for (int i = 0; i < cnt; ++i) {
+            case 2:  // control send_cq
                 if (wc[i].status != IBV_WC_SUCCESS) continue;
                 ep->HandleCompletion(wc[i]);
-            }
-            if (cnt > 0) any_send = true;
-        }
-
-        {
-            int cnt = ibv_poll_cq(ep->data_send_cq_, 32, wc);
-            if (cnt < 0) return;
-            for (int i = 0; i < cnt; ++i) {
+                break;
+            case 3: {  // data_send_cq
                 if (wc[i].status != IBV_WC_SUCCESS) {
                     LOG_ERR("data_send_cq WC error: opcode=%d status=%d(%s) wr_id=%lu",
                             wc[i].opcode, wc[i].status,
@@ -1141,30 +1141,18 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                     ep->OnLargeTransferComplete();
                     continue;
                 }
-                // inline Data QP send handling
                 uint32_t rpc_id = static_cast<uint32_t>(wc[i].wr_id);
                 ep->ReleaseLargeFrame(rpc_id);
                 ep->OnLargeTransferComplete();
+                break;
             }
-            if (cnt > 0) any_send = true;
+            }
         }
 
-        if (any_send) continue;  // go back to recv phase
-
-        // ---- Phase 3: re-arm + re-poll ----
-        if (!notified) {
-            ibv_req_notify_cq(ep->send_cq_, 0);
-            ibv_req_notify_cq(ep->recv_cq_, 1);
-            ibv_req_notify_cq(ep->data_send_cq_, 0);
-            ibv_req_notify_cq(ep->data_recv_cq_, 1);
-            notified = true;
-            continue;
+        // Dispatch frames added to read_buf_ by recv CQs.
+        if (phase <= 1) {
+            ep->_msg_dispatcher.ProcessNewMessage(ep->read_buf_);
         }
-
-        if (!ep->MoreReadEvents(&progress)) break;
-
-        if (ep->GetAndAckEvents() < 0) return;
-        notified = false;
     }
 }
 
