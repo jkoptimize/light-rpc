@@ -2,6 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## RDMA Verbs 规范约束（底线）
+
+当**审视代码、讨论方案、编写实现**时，涉及任何 RDMA verbs 的使用（`ibv_*`），必须主动参考并遵循 IB verbs 标准规范（InfiniBand Architecture Specification, RDMA Protocol Verbs specification）。这包括但不限于：
+
+- `qp_access_flags` 的有效值和语义（`IBV_ACCESS_REMOTE_WRITE`、`IBV_ACCESS_REMOTE_READ` 等）
+- `ibv_reg_mr` 中 `ibv_access_flags` 的含义（`IBV_ACCESS_LOCAL_WRITE`、`IBV_ACCESS_REMOTE_WRITE` 等）
+- `wr.imm_data` 与 `wc.imm_data` 的协议行为
+- RDMA WRITE / SEND / RECV 操作的 CQE 语义和顺序保证
+- RC 传输层的可靠性语义（transport ACK、send WC 含义）
+- QP 状态机转换规则（RESET→INIT→RTR→RTS）
+- `rnr_retry`、`min_rnr_timer` 等参数的含义和影响
+
+**不可臆断或凭经验猜测 verbs 行为，必须对照规范确认。**
+
 ## 单元测试规则
 
 - **不含 RDMA 接口的纯逻辑**：可以写单元测试（如 HelloMessage 序列化、流控窗口计算、HandleCompletion SEND WC 处理）
