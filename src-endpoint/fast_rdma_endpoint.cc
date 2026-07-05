@@ -1118,6 +1118,7 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
         }
 
         // ---- Phase 2: all send ----
+        bool any_send = false;
         {
             int cnt = ibv_poll_cq(ep->send_cq_, 32, wc);
             if (cnt < 0) return;
@@ -1125,6 +1126,7 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                 if (wc[i].status != IBV_WC_SUCCESS) continue;
                 ep->HandleCompletion(wc[i]);
             }
+            if (cnt > 0) any_send = true;
         }
 
         {
@@ -1144,8 +1146,10 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                 ep->ReleaseLargeFrame(rpc_id);
                 ep->OnLargeTransferComplete();
             }
-            if (cnt > 0 && !any_recv) continue;  // Send completed, go back to recv phase
+            if (cnt > 0) any_send = true;
         }
+
+        if (any_send) continue;  // go back to recv phase
 
         // ---- Phase 3: re-arm + re-poll ----
         if (!notified) {
