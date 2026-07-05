@@ -11,11 +11,12 @@ TEST(LargeBlockFindBestFit, EmptyList) {
   EXPECT_EQ(LargeBlockFindBestFit(nullptr, 100), nullptr);
 }
 
-TEST(LargeBlockFindBestFit, SingleNode_HeadCannotBeFound) {
+TEST(LargeBlockFindBestFit, SingleNode_HeadFound) {
   LargeBlockNode n1{nullptr, 100, nullptr, nullptr};
-  // Head (first node) can never be found by design -- the search logic
-  // only returns nodes at position >= 1 (i.e., non-head nodes).
-  EXPECT_EQ(LargeBlockFindBestFit(&n1, 100), nullptr);
+  // First-fit on ascending list: head node IS findable.
+  EXPECT_EQ(LargeBlockFindBestFit(&n1, 100), &n1);
+  EXPECT_EQ(LargeBlockFindBestFit(&n1, 50), &n1);      // also first fit
+  EXPECT_EQ(LargeBlockFindBestFit(&n1, 200), nullptr);  // too large
 }
 
 TEST(LargeBlockFindBestFit, SecondNodeExactMatch) {

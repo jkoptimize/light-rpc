@@ -30,30 +30,23 @@ ibv_mr* LargeBlockAlloc(size_t size) {
     ThreadExitHelper::add_callback([] { RecycleTLSLargeBlocks(); });
   }
 
-  // Best-fit search in TLS cache.
-  LargeBlockNode* best_prev = nullptr;
+  // First-fit = best-fit on ascending-size list.
   LargeBlockNode* prev = nullptr;
   LargeBlockNode* cur = tls_large_block_list;
-  size_t best_diff = SIZE_MAX;
-
-  while (cur != nullptr) {
-    if (cur->size >= size) {
-      size_t diff = cur->size - size;
-      if (diff < best_diff) {
-        best_diff = diff;
-        best_prev = prev;
-      }
-    }
+  while (cur != nullptr && cur->size < size) {
     prev = cur;
     cur = cur->next;
   }
-
-  if (best_prev != nullptr) {
-    LargeBlockNode* hit = best_prev->next;
-    best_prev->next = hit->next;
+  if (cur != nullptr) {
+    // Unlink cur from the list.
+    if (prev != nullptr) {
+      prev->next = cur->next;
+    } else {
+      tls_large_block_list = cur->next;
+    }
     tls_large_block_num--;
-    ibv_mr* mr = hit->mr;
-    delete hit;
+    ibv_mr* mr = cur->mr;
+    delete cur;
     return mr;
   }
 
@@ -112,26 +105,13 @@ void ReturnLargeBlock(ibv_mr* mr) {
 
 // For unit tests only
 LargeBlockNode* LargeBlockFindBestFit(LargeBlockNode* head, size_t size) {
-  LargeBlockNode* best_prev = nullptr;
-  LargeBlockNode* prev = nullptr;
+  // First-fit = best-fit on ascending-size list.
   LargeBlockNode* cur = head;
-  size_t best_diff = SIZE_MAX;
-
-  while (cur != nullptr) {
-    if (cur->size >= size) {
-      size_t diff = cur->size - size;
-      if (diff < best_diff) {
-        best_diff = diff;
-        best_prev = prev;
-      }
-    }
-    prev = cur;
+  while (cur != nullptr && cur->size < size) {
     cur = cur->next;
   }
+  return cur;  // first node with size >= request, or nullptr
 
-  if (best_prev == nullptr)
-    return nullptr;
-  return best_prev->next;
 }
 
 // For unit tests only
