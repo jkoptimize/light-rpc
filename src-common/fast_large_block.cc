@@ -50,11 +50,7 @@ ibv_mr* LargeBlockAlloc(size_t size) {
 
   if (best_prev != nullptr) {
     LargeBlockNode* hit = best_prev->next;
-    if (best_prev == tls_large_block_list) {
-      tls_large_block_list = hit->next;
-    } else {
-      best_prev->next = hit->next;
-    }
+    best_prev->next = hit->next;
     tls_large_block_num--;
     ibv_mr* mr = hit->mr;
     delete hit;
@@ -101,7 +97,7 @@ void ReturnLargeBlock(ibv_mr* mr) {
   }
   tls_large_block_num++;
   if (tls_large_block_num > kMaxCachedLargeBlocks) {
-    // LRU eviction: remove last element
+    // Evict largest block (sorted by size)
     LargeBlockNode* last = tls_large_block_list;
     while (last->next != nullptr && last->next->next != nullptr)
       last = last->next;
