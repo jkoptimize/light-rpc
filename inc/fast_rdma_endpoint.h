@@ -13,11 +13,11 @@ namespace fast {
 class FastServer;  // forward declare
 
 // ============================================================
-// HelloMessage — 40B TCP 带外握手消息
+// HelloMessage — 44B TCP 带外握手消息
 // ============================================================
 
 struct HelloMessage {
-    static const size_t   kMsgLen = 40;
+    static const size_t   kMsgLen = 44;
     static const uint16_t kHelloVer = 1;
     static const uint16_t kImplVer = 1;  // 0 = TCP fallback
 
@@ -31,6 +31,7 @@ struct HelloMessage {
     uint16_t lid = 0;
     ibv_gid  gid = {};
     uint32_t qp_num = 0;
+    uint32_t data_qp_num = 0;
 
     void Serialize(void* data) const;
     void Deserialize(const void* data);
@@ -72,8 +73,11 @@ public:
     static int ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd);
 
     // ============ QP Resource Management ============
+    static const int kDataQpDepth = 32;
+
     int AllocateResources();
     int BringUpQp(uint16_t lid, ibv_gid gid, uint32_t remote_qpn);
+    int BringUpDataQp(uint16_t lid, ibv_gid gid, uint32_t remote_qpn);
     void DeallocateResources();
 
     // ============ Send (called by KeepWrite thread) ============
@@ -154,6 +158,9 @@ private:
     ibv_qp*            qp_ = nullptr;
     ibv_cq*            send_cq_ = nullptr;
     ibv_cq*            recv_cq_ = nullptr;
+    ibv_qp*            data_qp_ = nullptr;
+    ibv_cq*            data_send_cq_ = nullptr;
+    ibv_cq*            data_recv_cq_ = nullptr;
     ibv_comp_channel*  comp_channel_ = nullptr;
 
     // ---- TCP fd used during handshake ----
@@ -211,6 +218,8 @@ private:
     // ---- CQ event counters (ref brpc RdmaEndpoint) ----
     int send_cq_events{0};
     int recv_cq_events{0};
+    int data_send_cq_events{0};
+    int data_recv_cq_events{0};
 
     // ---- Shutdown ----
     std::atomic<bool> _stop{false};

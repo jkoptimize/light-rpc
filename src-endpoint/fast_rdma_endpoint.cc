@@ -25,6 +25,30 @@ static int          g_rdma_max_sge = 32;
 static uint32_t     g_rdma_recv_block_size = 0;
 static uint32_t     g_rdma_zerocopy_min_size = 512;
 
+namespace {
+ibv_cq* CreateCq(int size, ibv_comp_channel* ch) {
+  ibv_cq* cq = ibv_create_cq(g_ctx, size, nullptr, ch, 0);
+  CHECK(cq != nullptr);
+  return cq;
+}
+
+ibv_qp* CreateQp(ibv_cq* send_cq, ibv_cq* recv_cq,
+                  int max_send_wr, int max_recv_wr,
+                  int max_send_sge, int max_recv_sge) {
+  ibv_qp_init_attr attr = {};
+  attr.send_cq = send_cq;
+  attr.recv_cq = recv_cq;
+  attr.qp_type = IBV_QPT_RC;
+  attr.cap.max_send_wr  = max_send_wr;
+  attr.cap.max_recv_wr  = max_recv_wr;
+  attr.cap.max_send_sge = max_send_sge;
+  attr.cap.max_recv_sge = max_recv_sge;
+  ibv_qp* qp = ibv_create_qp(g_pd, &attr);
+  CHECK(qp != nullptr);
+  return qp;
+}
+}  // namespace
+
 static std::once_flag g_init_once;
 
 void FastRdmaEndpoint::GlobalInitialize() {
@@ -78,6 +102,8 @@ void HelloMessage::Serialize(void* data) const {
     pos += 8;
     uint32_t* qpn = reinterpret_cast<uint32_t*>(pos);
     *qpn = htonl(qp_num);
+    uint32_t* dqpn = qpn + 1;
+    *dqpn = htonl(data_qp_num);
 }
 
 void HelloMessage::Deserialize(const void* data) {
@@ -97,6 +123,8 @@ void HelloMessage::Deserialize(const void* data) {
     pos += 8;
     const uint32_t* qpn = reinterpret_cast<const uint32_t*>(pos);
     qp_num = ntohl(*qpn);
+    const uint32_t* dqpn = qpn + 1;
+    data_qp_num = ntohl(*dqpn);
 }
 
 bool HelloNegotiationValid(const HelloMessage& msg) {
@@ -249,10 +277,10 @@ int FastRdmaEndpoint::WriteToFd(int fd, const void* data, size_t len) {
 // ---------------------------------------------------------------------------
 
 int FastRdmaEndpoint::ProcessHandshakeAtClient(FastRdmaEndpoint* ep, int tcp_fd) {
-    // 1. Allocate CQ + QP
+    // 1. Allocate CQ + QP (control + data)
     if (ep->AllocateResources() < 0) return -1;
 
-    // 2. Send HelloMessage
+    // 2. Send HelloMessage (with data_qp_num)
     HelloMessage local;
     local.block_size = g_rdma_recv_block_size;
     local.sq_size   = ep->sq_size_;
@@ -260,6 +288,7 @@ int FastRdmaEndpoint::ProcessHandshakeAtClient(FastRdmaEndpoint* ep, int tcp_fd)
     local.lid = g_lid;
     local.gid = g_gid;
     local.qp_num    = ep->qp_->qp_num;
+    local.data_qp_num = ep->data_qp_->qp_num;
 
     uint8_t data[HelloMessage::kMsgLen];
     local.Serialize(data);
@@ -281,10 +310,13 @@ int FastRdmaEndpoint::ProcessHandshakeAtClient(FastRdmaEndpoint* ep, int tcp_fd)
     ep->remote_rq_window_size_.store(ep->local_window_capacity_, std::memory_order_relaxed);
     ep->sq_imm_window_size_ = RESERVED_WR_NUM;
 
-    // 5. Bring up QP (RESET->INIT->RTR->RTS)
+    // 5. Bring up Control QP (RESET->INIT->RTR->RTS)
     if (ep->BringUpQp(remote.lid, remote.gid, remote.qp_num) < 0) return -1;
 
-    // 6. Send ACK (RDMA_OK)
+    // 6. Bring up Data QP (RESET->INIT->RTR->RTS, no PostRecv)
+    if (ep->BringUpDataQp(remote.lid, remote.gid, remote.data_qp_num) < 0) return -1;
+
+    // 7. Send ACK (RDMA_OK)
     uint32_t ack = htonl(1);
     if (ep->WriteToFd(tcp_fd, &ack, 4) < 0) return -1;
 
@@ -309,13 +341,16 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd)
     ep->remote_rq_window_size_.store(ep->local_window_capacity_, std::memory_order_relaxed);
     ep->sq_imm_window_size_ = RESERVED_WR_NUM;
 
-    // 3. Allocate QP/CQ
+    // 3. Allocate QP/CQ (control + data)
     if (ep->AllocateResources() < 0) return -1;
 
-    // 4. Bring up QP (RESET→INIT→RTR→RTS), then QP is ready
+    // 4. Bring up Control QP (RESET→INIT→RTR→RTS)
     if (ep->BringUpQp(remote.lid, remote.gid, remote.qp_num) < 0) return -1;
 
-    // 5. Send server HelloMessage (qp_num already available from AllocateResources)
+    // 5. Bring up Data QP (RESET→INIT→RTR→RTS, no PostRecv)
+    if (ep->BringUpDataQp(remote.lid, remote.gid, remote.data_qp_num) < 0) return -1;
+
+    // 6. Send server HelloMessage (qp_num + data_qp_num from AllocateResources)
     HelloMessage local;
     local.block_size = g_rdma_recv_block_size;
     local.sq_size   = ep->sq_size_;
@@ -323,11 +358,12 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd)
     local.lid       = g_lid;
     local.gid = g_gid;
     local.qp_num    = ep->qp_ ? ep->qp_->qp_num : 0;
+    local.data_qp_num = ep->data_qp_ ? ep->data_qp_->qp_num : 0;
 
     local.Serialize(data);
     if (ep->WriteToFd(tcp_fd, data, HelloMessage::kMsgLen) < 0) return -1;
 
-    // 6. Wait for client ACK
+    // 7. Wait for client ACK
     uint32_t ack;
     if (ep->ReadFromFd(tcp_fd, &ack, 4) < 0) return -1;
 
@@ -342,21 +378,13 @@ int FastRdmaEndpoint::AllocateResources() {
     comp_channel_ = ibv_create_comp_channel(g_ctx);
     CHECK(comp_channel_ != nullptr);
 
-    send_cq_ = ibv_create_cq(g_ctx, sq_size_, nullptr, comp_channel_, 0);
-    recv_cq_ = ibv_create_cq(g_ctx, rq_size_, nullptr, comp_channel_, 0);
-    CHECK(send_cq_ != nullptr && recv_cq_ != nullptr);
+    send_cq_      = CreateCq(sq_size_, comp_channel_);
+    recv_cq_      = CreateCq(rq_size_, comp_channel_);
+    data_send_cq_ = CreateCq(kDataQpDepth, comp_channel_);
+    data_recv_cq_ = CreateCq(kDataQpDepth, comp_channel_);
 
-    ibv_qp_init_attr qp_attr = {};
-    qp_attr.send_cq = send_cq_;
-    qp_attr.recv_cq = recv_cq_;
-    qp_attr.qp_type = IBV_QPT_RC;
-    qp_attr.cap.max_send_wr  = sq_size_;
-    qp_attr.cap.max_recv_wr  = rq_size_;
-    qp_attr.cap.max_send_sge = g_rdma_max_sge;
-    qp_attr.cap.max_recv_sge = 1;
-
-    qp_ = ibv_create_qp(g_pd, &qp_attr);
-    CHECK(qp_ != nullptr);
+    qp_      = CreateQp(send_cq_, recv_cq_, sq_size_, rq_size_, g_rdma_max_sge, 1);
+    data_qp_ = CreateQp(data_send_cq_, data_recv_cq_, kDataQpDepth, kDataQpDepth, g_rdma_max_sge, 1);
 
     sbuf_.resize(sq_size_ - RESERVED_WR_NUM);
     rbuf_.resize(rq_size_);
@@ -364,6 +392,8 @@ int FastRdmaEndpoint::AllocateResources() {
 
     ibv_req_notify_cq(send_cq_, 0);
     ibv_req_notify_cq(recv_cq_, 1);
+    ibv_req_notify_cq(data_send_cq_, 0);
+    ibv_req_notify_cq(data_recv_cq_, 1);
 
     // Register comp_channel fd with global EventDispatcher
     EventDispatcher::GetInstance().RegisterEvent(
@@ -420,11 +450,60 @@ int FastRdmaEndpoint::BringUpQp(uint16_t lid, ibv_gid gid, uint32_t remote_qpn) 
     return 0;
 }
 
+int FastRdmaEndpoint::BringUpDataQp(uint16_t lid, ibv_gid gid, uint32_t remote_qpn) {
+    ibv_qp_attr attr = {};
+
+    // RESET -> INIT
+    attr.qp_state        = IBV_QPS_INIT;
+    attr.pkey_index      = 0;
+    attr.port_num        = 1;
+    attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE;
+    CHECK(ibv_modify_qp(data_qp_, &attr,
+        IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS) == 0);
+
+    // INIT -> RTR
+    memset(&attr, 0, sizeof(attr));
+    attr.qp_state              = IBV_QPS_RTR;
+    attr.path_mtu              = IBV_MTU_1024;
+    attr.dest_qp_num           = remote_qpn;
+    attr.rq_psn                = 0;
+    attr.max_dest_rd_atomic    = 0;
+    attr.min_rnr_timer         = 0;
+    attr.ah_attr.dlid          = lid;
+    attr.ah_attr.sl            = 0;
+    attr.ah_attr.src_path_bits = 0;
+    attr.ah_attr.is_global     = 1;
+    attr.ah_attr.port_num      = 1;
+    attr.ah_attr.grh.dgid      = gid;
+    attr.ah_attr.grh.sgid_index = 0;
+    attr.ah_attr.grh.hop_limit  = 16;
+    CHECK(ibv_modify_qp(data_qp_, &attr,
+        IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
+        IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER | IBV_QP_AV) == 0);
+
+    // RTR -> RTS
+    memset(&attr, 0, sizeof(attr));
+    attr.qp_state      = IBV_QPS_RTS;
+    attr.timeout        = 14;
+    attr.retry_cnt      = 7;
+    attr.rnr_retry      = 0;
+    attr.sq_psn         = 0;
+    attr.max_rd_atomic  = 0;
+    CHECK(ibv_modify_qp(data_qp_, &attr,
+        IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
+        IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC) == 0);
+
+    return 0;
+}
+
 void FastRdmaEndpoint::DeallocateResources() {
     sbuf_.clear();
     rbuf_.clear();
     rbuf_data_.clear();
 
+    if (data_qp_)      { ibv_destroy_qp(data_qp_);        data_qp_ = nullptr; }
+    if (data_send_cq_) { ibv_destroy_cq(data_send_cq_);    data_send_cq_ = nullptr; }
+    if (data_recv_cq_) { ibv_destroy_cq(data_recv_cq_);    data_recv_cq_ = nullptr; }
     if (qp_)      { ibv_destroy_qp(qp_);            qp_ = nullptr; }
     if (send_cq_) { ibv_destroy_cq(send_cq_);        send_cq_ = nullptr; }
     if (recv_cq_) { ibv_destroy_cq(recv_cq_);        recv_cq_ = nullptr; }
@@ -764,8 +843,10 @@ int FastRdmaEndpoint::GetAndAckEvents() {
             LOG_ERR("Fail to get cq event");
             return -1;
         }
-        if (cq == send_cq_)       ++send_cq_events;
-        else if (cq == recv_cq_)  ++recv_cq_events;
+        if (cq == send_cq_)            ++send_cq_events;
+        else if (cq == recv_cq_)       ++recv_cq_events;
+        else if (cq == data_send_cq_)  ++data_send_cq_events;
+        else if (cq == data_recv_cq_)  ++data_recv_cq_events;
         else LOG_ERR("Unknown CQ event");
     }
     if (send_cq_events >= MAX_CQ_EVENTS) {
@@ -775,6 +856,14 @@ int FastRdmaEndpoint::GetAndAckEvents() {
     if (recv_cq_events >= MAX_CQ_EVENTS) {
         ibv_ack_cq_events(recv_cq_, recv_cq_events);
         recv_cq_events = 0;
+    }
+    if (data_send_cq_events >= MAX_CQ_EVENTS) {
+        ibv_ack_cq_events(data_send_cq_, data_send_cq_events);
+        data_send_cq_events = 0;
+    }
+    if (data_recv_cq_events >= MAX_CQ_EVENTS) {
+        ibv_ack_cq_events(data_recv_cq_, data_recv_cq_events);
+        data_recv_cq_events = 0;
     }
 
     return 0;

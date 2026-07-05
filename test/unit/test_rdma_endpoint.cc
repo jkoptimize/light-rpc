@@ -19,7 +19,7 @@ TEST(FastRdmaEndpoint, HelloMessageSerializeDeserialize) {
     msg.gid.raw[0]     = 0xFE;
     msg.qp_num     = 42;
 
-    uint8_t buf[40];
+    uint8_t buf[fast::HelloMessage::kMsgLen];
     msg.Serialize(buf);
 
     fast::HelloMessage msg2;
@@ -31,7 +31,19 @@ TEST(FastRdmaEndpoint, HelloMessageSerializeDeserialize) {
     EXPECT_EQ(msg2.lid, 5);
     EXPECT_EQ(msg2.gid.raw[0], 0xFE);
     EXPECT_EQ(msg2.qp_num, 42);
+    EXPECT_EQ(msg2.data_qp_num, 0);
     EXPECT_EQ(memcmp(msg2.magic, "RDMA", 4), 0);
+}
+
+TEST(HelloMessageTest, SerializeDeserialize44B) {
+    fast::HelloMessage msg;
+    msg.data_qp_num = 42;
+    uint8_t buf[fast::HelloMessage::kMsgLen];
+    msg.Serialize(buf);
+    fast::HelloMessage msg2;
+    msg2.Deserialize(buf);
+    EXPECT_EQ(msg2.data_qp_num, 42u);
+    EXPECT_EQ(msg2.qp_num, msg.qp_num);
 }
 
 TEST(FastRdmaEndpoint, HelloNegotiationValid) {
