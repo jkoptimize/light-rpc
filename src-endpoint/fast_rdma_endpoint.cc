@@ -532,15 +532,15 @@ ssize_t FastRdmaEndpoint::CutSegFromIOBuf(IOBuf* buf,
                                            uint64_t remote_addr,
                                            uint32_t imm_rkey,
                                            uint32_t rpc_id) {
-    RdmaIOBuf* rio = static_cast<RdmaIOBuf*>(buf);
     ibv_sge sglist[MAX_SGE];
     size_t sge_idx = 0;
     size_t total = 0;
-    for (size_t i = 0; i < rio->ref_num() && sge_idx < static_cast<size_t>(MAX_SGE); ++i) {
-        const IOBuf::BlockRef& ref = rio->ref_at(i);
+    for (size_t i = 0; i < buf->ref_num() && sge_idx < static_cast<size_t>(MAX_SGE); ++i) {
+        const IOBuf::BlockRef& ref = buf->ref_at(i);
         sglist[sge_idx].addr   = reinterpret_cast<uint64_t>(ref.block->data + ref.offset);
         sglist[sge_idx].length = ref.length;
         sglist[sge_idx].lkey   = GetRegionId(ref.block->data + ref.offset);
+        if (sglist[sge_idx].lkey == 0) return -1;  // not from BlockPool
         total += ref.length;
         ++sge_idx;
     }
