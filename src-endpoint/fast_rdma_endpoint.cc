@@ -18,7 +18,7 @@ static const int RESERVED_WR_NUM = 3;
 
 // ---- Global RDMA resources (set once by GlobalInitialize) ----
 static ibv_context* g_ctx    = nullptr;
-static ibv_pd*      g_pd     = nullptr;
+ibv_pd*      g_pd     = nullptr;
 static ibv_gid      g_gid    = {};
 static uint16_t     g_lid    = 0;
 static int          g_rdma_max_sge = 32;
