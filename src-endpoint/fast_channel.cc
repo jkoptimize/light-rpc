@@ -22,7 +22,7 @@ FastChannel::FastChannel(std::string dest_ip, int dest_port) {
     endpoint_->SetRemoteAddr(dest_ip, dest_port);
     endpoint_->msg_dispatcher().SetMode(DispatcherMode::kClient);
     endpoint_->msg_dispatcher().SetHandler(OnProcessResponse, this);
-    endpoint_->_large_done_cb = [this] { large_cv_.notify_one(); };
+    endpoint_->_large_done_cb = [this] { large_cv_.notify_all(); };
 }
 
 FastChannel::~FastChannel() {
