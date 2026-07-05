@@ -1081,7 +1081,12 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
             int cnt = ibv_poll_cq(ep->data_recv_cq_, 32, wc);
             if (cnt < 0) return;
             for (int i = 0; i < cnt; ++i) {
-                if (wc[i].status != IBV_WC_SUCCESS) continue;
+                if (wc[i].status != IBV_WC_SUCCESS) {
+                    LOG_ERR("data_recv_cq WC error: opcode=%d status=%d(%s) wr_id=%lu",
+                            wc[i].opcode, wc[i].status,
+                            ibv_wc_status_str(wc[i].status), wc[i].wr_id);
+                    continue;
+                }
                 // inline Data QP recv handling
                 uint32_t rkey = ntohl(wc[i].imm_data);
                 {
@@ -1094,8 +1099,10 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                         IOBuf frame;
                         frame.append_user_data_with_meta(
                             mr->addr, wc[i].byte_len,
-                            [](void* p) { ReturnLargeBlock((ibv_mr*)p); }, 0);
+                            [mr](void*) { ReturnLargeBlock(mr); }, 0);
                         ep->read_buf_.append(std::move(frame));
+                    } else {
+                        LOG_ERR("pending_large_map_ find failed for rkey=%u", rkey);
                     }
                 }
                 // Do not re-post recv
@@ -1123,7 +1130,12 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
             int cnt = ibv_poll_cq(ep->data_send_cq_, 32, wc);
             if (cnt < 0) return;
             for (int i = 0; i < cnt; ++i) {
-                if (wc[i].status != IBV_WC_SUCCESS) continue;
+                if (wc[i].status != IBV_WC_SUCCESS) {
+                    LOG_ERR("data_send_cq WC error: opcode=%d status=%d(%s) wr_id=%lu",
+                            wc[i].opcode, wc[i].status,
+                            ibv_wc_status_str(wc[i].status), wc[i].wr_id);
+                    continue;
+                }
                 // inline Data QP send handling
                 uint32_t rpc_id = static_cast<uint32_t>(wc[i].wr_id);
                 ep->ReleaseLargeFrame(rpc_id);
