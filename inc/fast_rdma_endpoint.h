@@ -2,7 +2,9 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 #include <infiniband/verbs.h>
 #include "fast_iobuf.h"
@@ -74,6 +76,26 @@ public:
 
     // ============ QP Resource Management ============
     static const int kDataQpDepth = 32;
+    static constexpr int kMaxLargeTransfers = 8;
+
+    // ============ Large Transfer ============
+    bool CanStartLargeTransfer() const {
+        return active_large_transfers_.load(std::memory_order_relaxed) < kMaxLargeTransfers;
+    }
+    void StartLargeTransfer() {
+        active_large_transfers_.fetch_add(1, std::memory_order_relaxed);
+    }
+    void OnLargeTransferComplete() {
+        active_large_transfers_.fetch_sub(1, std::memory_order_relaxed);
+        if (_large_done_cb) _large_done_cb();
+    }
+    std::function<void()> _large_done_cb;
+    void StoreLargeFrame(uint32_t rpc_id, IOBuf&& frame);
+    IOBuf* GetLargeFrame(uint32_t rpc_id);
+    void ReleaseLargeFrame(uint32_t rpc_id);
+    int PostLargeWriteRecv(ibv_mr* mr);
+    ssize_t CutSegFromIOBuf(IOBuf* buf, uint32_t remote_rkey, uint64_t remote_addr,
+                             uint32_t imm_rkey, uint32_t rpc_id);
 
     int AllocateResources();
     int BringUpQp(uint16_t lid, ibv_gid gid, uint32_t remote_qpn);
@@ -220,6 +242,17 @@ private:
     int recv_cq_events{0};
     int data_send_cq_events{0};
     int data_recv_cq_events{0};
+
+    // ---- Large transfer flow control ----
+    std::atomic<int> active_large_transfers_{0};
+
+    // ---- Large frame storage ----
+    std::mutex large_frame_mutex_;
+    std::unordered_map<uint32_t, IOBuf> pending_large_frames_;
+
+    // ---- LargeBlock tracking ----
+    std::mutex pending_large_mutex_;
+    std::unordered_map<uint32_t, ibv_mr*> pending_large_map_;  // key = rkey
 
     // ---- Shutdown ----
     std::atomic<bool> _stop{false};

@@ -511,6 +511,71 @@ void FastRdmaEndpoint::DeallocateResources() {
 }
 
 // ---------------------------------------------------------------------------
+// Large Transfer
+// ---------------------------------------------------------------------------
+
+int FastRdmaEndpoint::PostLargeWriteRecv(ibv_mr* mr) {
+    ibv_sge sge = {};
+    sge.addr   = reinterpret_cast<uint64_t>(mr->addr);
+    sge.length = 4;
+    sge.lkey   = mr->lkey;
+    ibv_recv_wr wr = {};
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+    ibv_recv_wr* bad = nullptr;
+    return ibv_post_recv(data_qp_, &wr, &bad);
+}
+
+ssize_t FastRdmaEndpoint::CutSegFromIOBuf(IOBuf* buf,
+                                           uint32_t remote_rkey,
+                                           uint64_t remote_addr,
+                                           uint32_t imm_rkey,
+                                           uint32_t rpc_id) {
+    RdmaIOBuf* rio = static_cast<RdmaIOBuf*>(buf);
+    ibv_sge sglist[MAX_SGE];
+    size_t sge_idx = 0;
+    size_t total = 0;
+    for (size_t i = 0; i < rio->ref_num() && sge_idx < static_cast<size_t>(MAX_SGE); ++i) {
+        const IOBuf::BlockRef& ref = rio->ref_at(i);
+        sglist[sge_idx].addr   = reinterpret_cast<uint64_t>(ref.block->data + ref.offset);
+        sglist[sge_idx].length = ref.length;
+        sglist[sge_idx].lkey   = GetRegionId(ref.block->data + ref.offset);
+        total += ref.length;
+        ++sge_idx;
+    }
+
+    ibv_send_wr wr = {};
+    wr.opcode              = IBV_WR_RDMA_WRITE_WITH_IMM;
+    wr.imm_data            = htonl(imm_rkey);
+    wr.wr_id               = rpc_id;
+    wr.send_flags          = IBV_SEND_SIGNALED;
+    wr.wr.rdma.remote_addr = remote_addr;
+    wr.wr.rdma.rkey        = remote_rkey;
+    wr.sg_list             = sglist;
+    wr.num_sge             = static_cast<int>(sge_idx);
+
+    ibv_send_wr* bad = nullptr;
+    int ret = ibv_post_send(data_qp_, &wr, &bad);
+    return (ret == 0) ? static_cast<ssize_t>(total) : -1;
+}
+
+void FastRdmaEndpoint::StoreLargeFrame(uint32_t rpc_id, IOBuf&& frame) {
+    std::lock_guard<std::mutex> lock(large_frame_mutex_);
+    pending_large_frames_[rpc_id] = std::move(frame);
+}
+
+IOBuf* FastRdmaEndpoint::GetLargeFrame(uint32_t rpc_id) {
+    std::lock_guard<std::mutex> lock(large_frame_mutex_);
+    auto it = pending_large_frames_.find(rpc_id);
+    return (it != pending_large_frames_.end()) ? &it->second : nullptr;
+}
+
+void FastRdmaEndpoint::ReleaseLargeFrame(uint32_t rpc_id) {
+    std::lock_guard<std::mutex> lock(large_frame_mutex_);
+    pending_large_frames_.erase(rpc_id);
+}
+
+// ---------------------------------------------------------------------------
 // Recv
 // ---------------------------------------------------------------------------
 
