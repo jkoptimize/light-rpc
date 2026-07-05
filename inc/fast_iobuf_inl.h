@@ -12,12 +12,7 @@ namespace fast
 
     void blockmem_deallocate(void *mem);
 
-    using UserDataDeleter = std::function<void(void *)>;
-
-    struct UserDataExtension
-    {
-        UserDataDeleter deleter;
-    };
+    constexpr uint16_t IOBUF_BLOCK_FLAGS_USER_DATA = 1;
 
     inline void reset_block_ref(fast::IOBuf::BlockRef &ref)
     {
@@ -185,8 +180,16 @@ namespace fast
             if (nshared.fetch_sub(1, std::memory_order_release) == 1)
             {
                 std::atomic_thread_fence(std::memory_order_acquire);
-                this->~Block();
-                fast::blockmem_deallocate(this);
+                if (flags & IOBUF_BLOCK_FLAGS_USER_DATA) {
+                    auto ext = get_user_data_extension();
+                    ext->deleter(data);
+                    ext->~UserDataExtension();
+                    this->~Block();
+                    free(this);
+                } else {
+                    this->~Block();
+                    fast::blockmem_deallocate(this);
+                }
             }
         }
 

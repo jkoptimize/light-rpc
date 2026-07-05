@@ -12,6 +12,13 @@
 
 namespace fast
 {
+    using UserDataDeleter = std::function<void(void *)>;
+
+    struct UserDataExtension
+    {
+        UserDataDeleter deleter;
+    };
+
     class IOBuf
     {
         friend class IOBufAsZeroCopyInputStream;
@@ -95,6 +102,9 @@ namespace fast
         int append(void const *data, size_t count);
         int append(char const *s);
         int append(const std::string &s);
+        int append_user_data_with_meta(void* data, size_t size,
+                                        UserDataDeleter deleter,
+                                        uint64_t meta);
         int resize(size_t n) { return resize(n, '\0'); }
         int resize(size_t n, char c);
         void clear();

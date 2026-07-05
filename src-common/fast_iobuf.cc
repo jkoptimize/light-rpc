@@ -1,4 +1,5 @@
 #include <sstream>
+#include <cstdlib>
 #include "fast_iobuf.h"
 #include "fast_block_pool.h"
 
@@ -297,6 +298,37 @@ namespace fast
         const IOBuf::BlockRef r = {b->size, 1, b};
         ++b->size;
         _push_back_ref(r);
+        return 0;
+    }
+
+    int IOBuf::append_user_data_with_meta(void* data,
+                                           size_t size,
+                                           UserDataDeleter deleter,
+                                           uint64_t meta) {
+        if (size > 0xFFFFFFFFULL - 100) {
+            LOG(FATAL) << "data_size=" << size << " is too large";
+            return -1;
+        }
+        if (!deleter) {
+            deleter = ::free;
+        }
+        if (!size) {
+            deleter(data);
+            return 0;
+        }
+        char* mem = (char*)malloc(sizeof(IOBuf::Block) + sizeof(UserDataExtension));
+        if (mem == NULL) {
+            return -1;
+        }
+        IOBuf::Block* b = new (mem) IOBuf::Block((char*)data, size);
+        b->flags |= IOBUF_BLOCK_FLAGS_USER_DATA;
+        b->u.data_meta = meta;
+        b->cap = size;
+        b->size = size;
+        UserDataExtension* ext = b->get_user_data_extension();
+        new (ext) UserDataExtension{std::move(deleter)};
+        const IOBuf::BlockRef r = { 0, (uint32_t)size, b };
+        _move_back_ref(r);
         return 0;
     }
 
