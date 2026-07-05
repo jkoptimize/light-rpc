@@ -26,7 +26,10 @@ FastChannel::FastChannel(std::string dest_ip, int dest_port) {
 }
 
 FastChannel::~FastChannel() {
-    closed_ = true;
+    {
+        std::lock_guard<std::mutex> lock(large_mutex_);
+        closed_ = true;
+    }
     large_cv_.notify_all();
     // Wake up any blocked CallMethod threads.
     std::lock_guard<std::mutex> lock(pending_mutex_);
