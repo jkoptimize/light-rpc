@@ -67,16 +67,17 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
 
     uint32_t meta_len    = meta.ByteSizeLong();
     uint32_t payload_len = request->ByteSizeLong();
-    uint32_t total_len   = 2 * kFixed32Bytes + meta_len + payload_len + attachment_len;
+    uint32_t total_len   = 3 * kFixed32Bytes + meta_len + payload_len + attachment_len;
 
-    // ---- 2. Build IOBuf frame: [total_len(BE)][meta_len(BE)][meta][payload][attachment] ----
+    // ---- 2. Build IOBuf frame: [total_len(BE)][msg_type(BE)][rpc_id(BE)][meta_len(BE)][meta][payload][attachment] ----
     // Frame header fields are in network byte order (big-endian), matching
     // CutInputMessage and OnProcessRequest which decode with ntohl.
     IOBuf frame;
-    uint32_t be_total_len = htonl(total_len);
-    uint32_t be_meta_len = htonl(meta_len);
-    frame.append(&be_total_len, kFixed32Bytes);
-    frame.append(&be_meta_len, kFixed32Bytes);
+    uint32_t be;
+    be = htonl(total_len);        frame.append(&be, kFixed32Bytes);
+    be = htonl(MSG_NORMAL);       frame.append(&be, kFixed32Bytes);
+    be = htonl(rpc_id);           frame.append(&be, kFixed32Bytes);
+    be = htonl(meta_len);         frame.append(&be, kFixed32Bytes);
 
     {
         IOBufAsZeroCopyOutputStream zcos(&frame);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -45,12 +46,15 @@ public:
 
     void AddEndpoint(uint32_t qp_num, FastRdmaEndpoint* ep);
 
+    void NotifyLargeDone() { large_cv_.notify_one(); }
+
     static int OnProcessRequest(IOBuf& frame, void* arg);
 
 private:
     static void SendErrorResponse(FastRdmaEndpoint* ep, uint32_t rpc_id,
                                    ErrorCode error_code);
     void ReturnRPCResponse(CallBackArgs args);
+    void WaitForLargeWritable(FastRdmaEndpoint* ep);
 
     std::string local_ip_;
     int         local_port_;
@@ -60,6 +64,10 @@ private:
     std::unordered_map<uint32_t, FastRdmaEndpoint*> conn_map_;
 
     std::unordered_map<std::string, ServiceInfo> service_map_;
+
+    std::mutex              large_mutex_;
+    std::condition_variable large_cv_;
+    bool                    closed_{false};
 
     // Deprecated — kept for future use
     // int num_pollers_;

@@ -958,6 +958,7 @@ void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t events) {
         auto* ep = new FastRdmaEndpoint();
         ep->tcp_fd_ = client_fd;
         ep->_owner  = server;
+        ep->_large_done_cb = [server] { server->NotifyLargeDone(); };
         ep->msg_dispatcher().SetMode(DispatcherMode::kServer);
         ep->msg_dispatcher().SetHandler(FastServer::OnProcessRequest, ep);
         EventDispatcher::GetInstance().RegisterEvent(
