@@ -25,11 +25,19 @@ namespace fast
 
   constexpr int MAX_SGE = 32;
 
-  enum MessageType
+  enum MessageType : uint32_t
   {
-    FAST_SmallMessage = 1,
-    FAST_NotifyMessage = 2
+    MSG_NORMAL           = 0, // Inline/Medium RPC 请求
+    MSG_NOTIFY           = 1, // Large 传输通知
+    MSG_AUTHORITY        = 2, // Large 授权回复
+    MSG_NORMAL_RESPONSE  = 3, // RPC 响应
   };
+
+  // 帧头固定大小
+  constexpr uint32_t kFrameHeaderBytes = 12;        // total_len + msg_type + rpc_id
+  constexpr uint32_t kNotifyFrameBytes  = 16;       // 12 + data_total_len (MSG_NOTIFY 帧)
+  constexpr uint32_t kAuthFrameBytes    = 24;       // 12 + rkey + remote_addr (MSG_AUTHORITY 帧)
+  constexpr uint32_t kRespHeaderBytes   = 16;       // 12B frame header + 4B error_code
 
   // Response error codes carried in the error_code field of the response frame.
   enum ErrorCode : uint32_t
