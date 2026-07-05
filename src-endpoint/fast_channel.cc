@@ -67,7 +67,7 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
 
     uint32_t meta_len    = meta.ByteSizeLong();
     uint32_t payload_len = request->ByteSizeLong();
-    uint32_t total_len   = 3 * kFixed32Bytes + meta_len + payload_len + attachment_len;
+    uint32_t total_len   = 4 * kFixed32Bytes + meta_len + payload_len + attachment_len;
 
     // ---- 2. Build IOBuf frame: [total_len(BE)][msg_type(BE)][rpc_id(BE)][meta_len(BE)][meta][payload][attachment] ----
     // Frame header fields are in network byte order (big-endian), matching
@@ -196,6 +196,7 @@ int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
     if (msg_type == MSG_NOTIFY) {
         uint32_t data_total_len = ntohl(*static_cast<const uint32_t*>(frame.fetch1()));
         ibv_mr* mr = LargeBlockAlloc(data_total_len);
+        if (mr == nullptr) return -1;
         self->endpoint_->PostLargeWriteRecv(mr);
 
         IOBuf auth_frame;

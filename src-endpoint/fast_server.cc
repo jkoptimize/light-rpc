@@ -100,6 +100,7 @@ int FastServer::OnProcessRequest(IOBuf& frame, void* arg) {
     if (msg_type == MSG_NOTIFY) {
         uint32_t data_total_len = ntohl(*static_cast<const uint32_t*>(frame.fetch1()));
         ibv_mr* mr = LargeBlockAlloc(data_total_len);
+        if (mr == nullptr) return -1;
         ep->PostLargeWriteRecv(mr);
 
         IOBuf auth_frame;

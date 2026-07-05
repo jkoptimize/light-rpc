@@ -1135,6 +1135,8 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                     LOG_ERR("data_send_cq WC error: opcode=%d status=%d(%s) wr_id=%lu",
                             wc[i].opcode, wc[i].status,
                             ibv_wc_status_str(wc[i].status), wc[i].wr_id);
+                    ep->ReleaseLargeFrame(static_cast<uint32_t>(wc[i].wr_id));
+                    ep->OnLargeTransferComplete();
                     continue;
                 }
                 // inline Data QP send handling
