@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <thread>
+#include "fast_define.h"
 #include "message_dispatcher.h"
 
 namespace fast {
@@ -15,7 +16,7 @@ bool MessageDispatcher::CutInputMessage(IOBuf& read_buf, IOBuf& frame) {
     const void* start = read_buf.fetch1();
     uint32_t total_len = ntohl(*static_cast<const uint32_t*>(start));
 
-    if (total_len < 4 || read_buf.length() < total_len) return false;
+    if (total_len < kFrameHeaderBytes || read_buf.length() < total_len) return false;
 
     read_buf.cutn(&frame, total_len);
     return true;

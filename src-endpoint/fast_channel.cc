@@ -229,7 +229,15 @@ int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
         uint64_t remote_addr = (static_cast<uint64_t>(remote_addr_hi) << 32) | remote_addr_lo;
 
         IOBuf* large_frame = self->endpoint_->GetLargeFrame(rpc_id);
-        self->endpoint_->CutSegFromIOBuf(large_frame, rkey, remote_addr, rkey, rpc_id);
+        if (large_frame == nullptr) {
+            LOG_ERR("OnProcessResponse: GetLargeFrame failed for rpc_id=%u", rpc_id);
+            return -1;
+        }
+        if (self->endpoint_->CutSegFromIOBuf(large_frame, rkey, remote_addr, rkey, rpc_id) < 0) {
+            self->endpoint_->ReleaseLargeFrame(rpc_id);
+            self->endpoint_->OnLargeTransferComplete();
+            return -1;
+        }
         return 0;
     }
 

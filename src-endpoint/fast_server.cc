@@ -133,7 +133,15 @@ int FastServer::OnProcessRequest(IOBuf& frame, void* arg) {
         uint64_t remote_addr = (static_cast<uint64_t>(hi) << 32) | lo;
 
         IOBuf* large_frame = ep->GetLargeFrame(rpc_id);
-        ep->CutSegFromIOBuf(large_frame, rkey, remote_addr, rkey, rpc_id);
+        if (large_frame == nullptr) {
+            LOG_ERR("OnProcessRequest: GetLargeFrame failed for rpc_id=%u", rpc_id);
+            return -1;
+        }
+        if (ep->CutSegFromIOBuf(large_frame, rkey, remote_addr, rkey, rpc_id) < 0) {
+            ep->ReleaseLargeFrame(rpc_id);
+            ep->OnLargeTransferComplete();
+            return -1;
+        }
         return 0;
     }
 

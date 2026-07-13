@@ -594,7 +594,8 @@ int FastRdmaEndpoint::DoPostRecv(void* block, size_t block_size) {
 }
 
 int FastRdmaEndpoint::PostRecv(uint32_t num, bool zerocopy) {
-    while (num-- > 0) {
+    uint32_t posted = 0;
+    while (posted < num) {
         if (zerocopy) {
             rbuf_[rq_received_].clear();
             IOBufAsZeroCopyOutputStream os(&rbuf_[rq_received_],
@@ -606,10 +607,11 @@ int FastRdmaEndpoint::PostRecv(uint32_t num, bool zerocopy) {
             rbuf_[rq_received_].clear();
             return -1;
         }
+        ++posted;
         ++rq_received_;
         if (rq_received_ == rbuf_.size()) rq_received_ = 0;
     }
-    new_rq_wrs_.fetch_add(num, std::memory_order_relaxed);
+    new_rq_wrs_.fetch_add(posted, std::memory_order_relaxed);
     return 0;
 }
 
