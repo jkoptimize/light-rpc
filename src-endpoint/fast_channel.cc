@@ -108,7 +108,6 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     // ---- 4. Enqueue ----
     if (total_len >= msg_threshold) {
         // Large path: store frame, send MSG_NOTIFY on control QP
-        pending.is_large = true;
         WaitForLargeWritable();
         endpoint_->StoreLargeFrame(rpc_id, std::move(frame));
 

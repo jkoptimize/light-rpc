@@ -75,7 +75,7 @@ public:
     static int ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd);
 
     // ============ QP Resource Management ============
-    static const int kDataQpDepth = 32;
+    static constexpr int kDataQpDepth = 8;
     static constexpr int kMaxLargeTransfers = 8;
 
     // ============ Large Transfer ============

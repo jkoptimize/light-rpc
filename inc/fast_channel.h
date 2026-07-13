@@ -53,7 +53,6 @@ private:
         google::protobuf::Message* response   = nullptr;
         bool                    done         = false;
         bool                    timed_out    = false;
-        bool                    is_large     = false;
         uint32_t                error_code   = 0;
         IOBuf                   attachment;
     };

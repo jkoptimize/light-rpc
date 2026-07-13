@@ -502,6 +502,25 @@ void FastRdmaEndpoint::DeallocateResources() {
     rbuf_.clear();
     rbuf_data_.clear();
 
+    // Clean up pending LargeBlock MRs — deregister + free unclaimed blocks.
+    {
+        std::lock_guard<std::mutex> lock(pending_large_mutex_);
+        for (auto& kv : pending_large_map_) {
+            ibv_mr* mr = kv.second;
+            if (mr) {
+                ibv_dereg_mr(mr);
+                free(mr->addr);
+            }
+        }
+        pending_large_map_.clear();
+    }
+
+    // Clean up pending Large frames (IOBuf destructors release BlockPool blocks).
+    {
+        std::lock_guard<std::mutex> lock(large_frame_mutex_);
+        pending_large_frames_.clear();
+    }
+
     if (data_qp_)      { ibv_destroy_qp(data_qp_);        data_qp_ = nullptr; }
     if (data_send_cq_) { ibv_destroy_cq(data_send_cq_);    data_send_cq_ = nullptr; }
     if (data_recv_cq_) { ibv_destroy_cq(data_recv_cq_);    data_recv_cq_ = nullptr; }
@@ -1106,13 +1125,19 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                 ep->HandleCompletion(wc[i]);
                 break;
             case 1: {  // data_recv_cq
+                uint32_t rkey = ntohl(wc[i].imm_data);
                 if (wc[i].status != IBV_WC_SUCCESS) {
                     LOG_ERR("data_recv_cq WC error: opcode=%d status=%d(%s) wr_id=%lu",
                             wc[i].opcode, wc[i].status,
                             ibv_wc_status_str(wc[i].status), wc[i].wr_id);
+                    std::lock_guard<std::mutex> lock(ep->pending_large_mutex_);
+                    auto it = ep->pending_large_map_.find(rkey);
+                    if (it != ep->pending_large_map_.end()) {
+                        ReturnLargeBlock(it->second);
+                        ep->pending_large_map_.erase(it);
+                    }
                     continue;
                 }
-                uint32_t rkey = ntohl(wc[i].imm_data);
                 {
                     std::lock_guard<std::mutex> lock(ep->pending_large_mutex_);
                     auto it = ep->pending_large_map_.find(rkey);
