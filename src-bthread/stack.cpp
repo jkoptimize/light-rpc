@@ -30,12 +30,6 @@
 #include "types.h"                        // BTHREAD_STACKTYPE_*
 #include "stack.h"
 
-DEFINE_int32(stack_size_small, 32768, "size of small stacks");
-DEFINE_int32(stack_size_normal, 1048576, "size of normal stacks");
-DEFINE_int32(stack_size_large, 8388608, "size of large stacks");
-DEFINE_int32(guard_page_size, 4096, "size of guard page, allocate stacks by malloc if it's 0(not recommended)");
-DEFINE_int32(tc_stack_small, 32, "maximum small stacks cached by each thread");
-DEFINE_int32(tc_stack_normal, 8, "maximum normal stacks cached by each thread");
 
 namespace fast {
 
@@ -145,8 +139,8 @@ void deallocate_stack_storage(StackStorage* s) {
     }
 }
 
-int* SmallStackClass::stack_size_flag = &FLAGS_stack_size_small;
-int* NormalStackClass::stack_size_flag = &FLAGS_stack_size_normal;
-int* LargeStackClass::stack_size_flag = &FLAGS_stack_size_large;
+int* SmallStackClass::stack_size_flag = &FastBthreadConfig::Get().stack_size_small;
+int* NormalStackClass::stack_size_flag = &FastBthreadConfig::Get().stack_size_normal;
+int* LargeStackClass::stack_size_flag = &FastBthreadConfig::Get().stack_size_large;
 
 }  // namespace fast

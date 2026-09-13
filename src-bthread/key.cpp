@@ -20,7 +20,6 @@
 // Date: Sun Aug  3 12:46:15 CST 2014
 
 #include <pthread.h>
-#include <gflags/gflags.h>
 
 #include "errno.h"       // EAGAIN
 #include "task_group.h"  // TaskGroup
@@ -34,15 +33,7 @@
 
 namespace fast {
 
-DEFINE_uint32(key_table_list_size, 4000,
-              "The maximum length of the KeyTableList. Once this value is "
-              "exceeded, a portion of the KeyTables will be moved to the "
-              "global free_keytables list.");
 
-DEFINE_uint32(borrow_from_globle_size, 200,
-              "The maximum number of KeyTables retrieved in a single operation "
-              "from the global free_keytables when no KeyTable exists in the "
-              "current thread's keytable_list.");
 
 EXTERN_BAIDU_VOLATILE_THREAD_LOCAL(TaskGroup*, tls_task_group);
 
@@ -342,7 +333,7 @@ KeyTable* borrow_keytable(bthread_keytable_pool_t* pool) {
             pthread_rwlock_wrlock(&pool->rwlock);
             p = (KeyTable*)pool->free_keytables;
             if (list) {
-                for (uint32_t i = 0; i < FLAGS_borrow_from_globle_size; ++i) {
+                for (uint32_t i = 0; i < FastBthreadConfig::Get().borrow_from_globle_size; ++i) {
                     if (p) {
                         pool->free_keytables = p->next;
                         list->get()->append(p);
@@ -386,13 +377,13 @@ void return_keytable(bthread_keytable_pool_t* pool, KeyTable* kt) {
     }
     auto list = (fast::butil::ThreadLocal<fast::KeyTableList>*)pool->list;
     list->get()->append(kt);
-    if (list->get()->get_length() > FLAGS_key_table_list_size) {
+    if (list->get()->get_length() > FastBthreadConfig::Get().key_table_list_size) {
         pthread_rwlock_unlock(&pool->rwlock);
         pthread_rwlock_wrlock(&pool->rwlock);
         if (!pool->destroyed) {
             int out = list->get()->move_first_n_to_target(
                 (KeyTable**)(&pool->free_keytables),
-                FLAGS_key_table_list_size / 2);
+                FastBthreadConfig::Get().key_table_list_size / 2);
             pool->size += out;
         }
     }

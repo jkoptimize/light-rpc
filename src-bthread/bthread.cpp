@@ -20,7 +20,6 @@
 // Date: Tue Jul 10 17:40:58 CST 2012
 
 #include <sys/syscall.h>
-#include <gflags/gflags.h>
 #include "butil/macros.h"                       // BAIDU_CASSERT
 #include "butil/thread_local.h"
 #include "task_group.h"                // TaskGroup
@@ -33,46 +32,11 @@ namespace fast {
 extern void print_task(std::ostream& os, bthread_t tid, bool enable_trace,
                        bool ignore_not_matched = false);
 
-static bool validate_bthread_concurrency(const char*, int32_t val) {
-    // bthread_setconcurrency sets the flag on success path which should
-    // not be strictly in a validator. But it's OK for a int flag.
-    return bthread_setconcurrency(val) == 0;
-}
-static bool validate_bthread_min_concurrency(const char*, int32_t val);
-static bool validate_bthread_current_tag(const char*, int32_t val);
-static bool validate_bthread_concurrency_by_tag(const char*, int32_t val);
 
-DEFINE_int32(bthread_concurrency, 8 + BTHREAD_EPOLL_THREAD_NUM,
-             "Number of pthread workers");
-BUTIL_VALIDATE_GFLAG(bthread_concurrency, validate_bthread_concurrency);
 
-DEFINE_int32(bthread_min_concurrency, 0,
-            "Initial number of pthread workers which will be added on-demand."
-            " The laziness is disabled when this value is non-positive,"
-            " and workers will be created eagerly according to -bthread_concurrency and bthread_setconcurrency(). ");
-BUTIL_VALIDATE_GFLAG(bthread_min_concurrency, validate_bthread_min_concurrency);
 
-DEFINE_int32(bthread_current_tag, BTHREAD_TAG_INVALID, "Set bthread concurrency for this tag");
-BUTIL_VALIDATE_GFLAG(bthread_current_tag, validate_bthread_current_tag);
 
-DEFINE_int32(bthread_concurrency_by_tag, 8 + BTHREAD_EPOLL_THREAD_NUM,
-             "Number of pthread workers of FLAGS_bthread_current_tag");
-BUTIL_VALIDATE_GFLAG(bthread_concurrency_by_tag, validate_bthread_concurrency_by_tag);
 
-DEFINE_int32(bthread_parking_lot_of_each_tag, 4, "Number of parking lots of each tag");
-BUTIL_VALIDATE_GFLAG(bthread_parking_lot_of_each_tag, [](const char*, int32_t val) {
-    if (val < BTHREAD_MIN_PARKINGLOT) {
-        LOG(ERROR) << "bthread_parking_lot_of_each_tag must be greater than or equal to "
-                   << BTHREAD_MIN_PARKINGLOT;
-        return false;
-    }
-    if (val > BTHREAD_MAX_PARKINGLOT) {
-        LOG(ERROR) << "bthread_parking_lot_of_each_tag must be less than or equal to "
-                   << BTHREAD_MAX_PARKINGLOT;
-        return false;
-    }
-    return true;
-});
 
 static bool never_set_bthread_concurrency = true;
 
@@ -109,9 +73,9 @@ inline TaskControl* get_or_new_task_control() {
     if (NULL == c) {
         return NULL;
     }
-    int concurrency = FLAGS_bthread_min_concurrency > 0 ?
-        FLAGS_bthread_min_concurrency :
-        FLAGS_bthread_concurrency;
+    int concurrency = FastBthreadConfig::Get().bthread_min_concurrency > 0 ?
+        FastBthreadConfig::Get().bthread_min_concurrency :
+        FastBthreadConfig::Get().bthread_concurrency;
     if (c->init(concurrency) != 0) {
         LOG(ERROR) << "Fail to init g_task_control";
         delete c;
@@ -216,51 +180,13 @@ static int add_workers_for_each_tag(int num) {
     int added = 0;
     auto c = get_task_control();
     for (auto i = 0; i < num; ++i) {
-        added += c->add_workers(1, i % FLAGS_task_group_ntags);
+        added += c->add_workers(1, i % FastBthreadConfig::Get().task_group_ntags);
     }
     return added;
 }
 
-static bool validate_bthread_min_concurrency(const char*, int32_t val) {
-    if (val <= 0) {
-        return true;
-    }
-    if (val < BTHREAD_MIN_CONCURRENCY || val > FLAGS_bthread_concurrency) {
-        return false;
-    }
-    TaskControl* c = get_task_control();
-    if (!c) {
-        return true;
-    }
-    BAIDU_SCOPED_LOCK(g_task_control_mutex);
-    int concurrency = c->concurrency();
-    if (val > concurrency) {
-        int added = fast::add_workers_for_each_tag(val - concurrency);
-        return added == (val - concurrency);
-    } else {
-        return true;
-    }
-}
 
-static bool validate_bthread_current_tag(const char*, int32_t val) {
-    if (val == BTHREAD_TAG_INVALID) {
-        return true;
-    } else if (val < BTHREAD_TAG_DEFAULT || val >= FLAGS_task_group_ntags) {
-        return false;
-    }
-    BAIDU_SCOPED_LOCK(fast::g_task_control_mutex);
-    auto c = get_task_control();
-    if (c == NULL) {
-        FLAGS_bthread_concurrency_by_tag = 8 + BTHREAD_EPOLL_THREAD_NUM;
-        return true;
-    }
-    FLAGS_bthread_concurrency_by_tag = c->concurrency(val);
-    return true;
-}
 
-static bool validate_bthread_concurrency_by_tag(const char*, int32_t val) {
-    return bthread_setconcurrency_by_tag(val, FLAGS_bthread_current_tag) == 0;
-}
 
 __thread TaskGroup* tls_task_group_nosignal = NULL;
 
@@ -429,7 +355,7 @@ int bthread_getattr(bthread_t tid, bthread_attr_t* attr) {
 }
 
 int bthread_getconcurrency(void) {
-    return fast::FLAGS_bthread_concurrency;
+    return fast::FastBthreadConfig::Get().bthread_concurrency;
 }
 
 int bthread_setconcurrency(int num) {
@@ -437,14 +363,14 @@ int bthread_setconcurrency(int num) {
         LOG(ERROR) << "Invalid concurrency=" << num;
         return EINVAL;
     }
-    if (fast::FLAGS_bthread_min_concurrency > 0) {
-        if (num < fast::FLAGS_bthread_min_concurrency) {
+    if (fast::FastBthreadConfig::Get().bthread_min_concurrency > 0) {
+        if (num < fast::FastBthreadConfig::Get().bthread_min_concurrency) {
             return EINVAL;
         }
         if (fast::never_set_bthread_concurrency) {
             fast::never_set_bthread_concurrency = false;
         }
-        fast::FLAGS_bthread_concurrency = num;
+        fast::FastBthreadConfig::Get().bthread_concurrency = num;
         return 0;
     }
     fast::TaskControl* c = fast::get_task_control();
@@ -460,24 +386,24 @@ int bthread_setconcurrency(int num) {
     if (c == NULL) {
         if (fast::never_set_bthread_concurrency) {
             fast::never_set_bthread_concurrency = false;
-            fast::FLAGS_bthread_concurrency = num;
-        } else if (num > fast::FLAGS_bthread_concurrency) {
-            fast::FLAGS_bthread_concurrency = num;
+            fast::FastBthreadConfig::Get().bthread_concurrency = num;
+        } else if (num > fast::FastBthreadConfig::Get().bthread_concurrency) {
+            fast::FastBthreadConfig::Get().bthread_concurrency = num;
         }
         return 0;
     }
-    if (fast::FLAGS_bthread_concurrency != c->concurrency()) {
+    if (fast::FastBthreadConfig::Get().bthread_concurrency != c->concurrency()) {
         LOG(ERROR) << "CHECK failed: bthread_concurrency="
-                   << fast::FLAGS_bthread_concurrency
+                   << fast::FastBthreadConfig::Get().bthread_concurrency
                    << " != tc_concurrency=" << c->concurrency();
-        fast::FLAGS_bthread_concurrency = c->concurrency();
+        fast::FastBthreadConfig::Get().bthread_concurrency = c->concurrency();
     }
-    if (num > fast::FLAGS_bthread_concurrency) {
+    if (num > fast::FastBthreadConfig::Get().bthread_concurrency) {
         // Create more workers if needed.
-        auto added = fast::add_workers_for_each_tag(num - fast::FLAGS_bthread_concurrency);
-        fast::FLAGS_bthread_concurrency += added;
+        auto added = fast::add_workers_for_each_tag(num - fast::FastBthreadConfig::Get().bthread_concurrency);
+        fast::FastBthreadConfig::Get().bthread_concurrency += added;
     }
-    return (num == fast::FLAGS_bthread_concurrency ? 0 : EPERM);
+    return (num == fast::FastBthreadConfig::Get().bthread_concurrency ? 0 : EPERM);
 }
 
 int bthread_getconcurrency_by_tag(bthread_tag_t tag) {
@@ -492,7 +418,7 @@ int bthread_getconcurrency_by_tag(bthread_tag_t tag) {
 int bthread_setconcurrency_by_tag(int num, bthread_tag_t tag) {
     if (tag == BTHREAD_TAG_INVALID) {
         return 0;
-    } else if (tag < BTHREAD_TAG_DEFAULT || tag >= FLAGS_task_group_ntags) {
+    } else if (tag < BTHREAD_TAG_DEFAULT || tag >= FastBthreadConfig::Get().task_group_ntags) {
         return EINVAL;
     }
     if (num < BTHREAD_MIN_CONCURRENCY || num > BTHREAD_MAX_CONCURRENCY) {
@@ -506,7 +432,7 @@ int bthread_setconcurrency_by_tag(int num, bthread_tag_t tag) {
 
     if (add >= 0) {
         auto added = c->add_workers(add, tag);
-        fast::FLAGS_bthread_concurrency += added;
+        fast::FastBthreadConfig::Get().bthread_concurrency += added;
         return (add == added ? 0 : EPERM);
     } else {
         LOG(WARNING) << "Fail to set concurrency by tag: " << tag

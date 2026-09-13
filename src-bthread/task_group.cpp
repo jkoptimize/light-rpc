@@ -21,7 +21,6 @@
 
 #include <sys/types.h>
 #include <stddef.h>                         // size_t
-#include <gflags/gflags.h>
 #include "butil/macros.h"                   // ARRAY_SIZE
 #include "butil/scoped_lock.h"              // BAIDU_SCOPED_LOCK
 #include "butil/fast_rand.h"
@@ -48,17 +47,8 @@ namespace fast {
 static const bthread_attr_t BTHREAD_ATTR_TASKGROUP = {
     BTHREAD_STACKTYPE_UNKNOWN, 0, NULL, BTHREAD_TAG_INVALID, {0} };
 
-DEFINE_bool(show_bthread_creation_in_vars, false, "When this flags is on, The time "
-            "from bthread creation to first run will be recorded and shown in /vars");
-BUTIL_VALIDATE_GFLAG(show_bthread_creation_in_vars, fast::butil::PassValidate);
 
-DEFINE_bool(show_per_worker_usage_in_vars, false,
-            "Show per-worker usage in /vars/bthread_per_worker_usage_<tid>");
-BUTIL_VALIDATE_GFLAG(show_per_worker_usage_in_vars, fast::butil::PassValidate);
 
-DEFINE_bool(bthread_enable_cpu_clock_stat, false,
-            "Enable CPU clock statistics for bthread");
-BUTIL_VALIDATE_GFLAG(bthread_enable_cpu_clock_stat, fast::butil::PassValidate);
 
 BAIDU_VOLATILE_THREAD_LOCAL(TaskGroup*, tls_task_group, NULL);
 // Sync with TaskMeta::local_storage when a bthread is created or destroyed.
@@ -721,7 +711,7 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
     cpu_time_stat.add_cumulated_cputime_ns(elp_ns, is_main_task(g, cur_meta->tid));
     g->_cpu_time_stat.store(cpu_time_stat);
 
-    if (FLAGS_bthread_enable_cpu_clock_stat) {
+    if (FastBthreadConfig::Get().bthread_enable_cpu_clock_stat) {
         const int64_t cpu_thread_time = fast::butil::cputhread_time_ns();
         if (g->_last_cpu_clock_ns != 0) {
             cur_meta->stat.cpu_usage_ns += cpu_thread_time - g->_last_cpu_clock_ns;

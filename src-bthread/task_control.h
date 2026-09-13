@@ -37,7 +37,6 @@
 #include "work_stealing_queue.h"        // WorkStealingQueue
 #include "parking_lot.h"
 
-DECLARE_int32(task_group_ntags);
 namespace fast {
 
 class TaskGroup;

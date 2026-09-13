@@ -22,13 +22,11 @@
 #ifndef BTHREAD_PARKING_LOT_H
 #define BTHREAD_PARKING_LOT_H
 
-#include <gflags/gflags.h>
 #include <atomic>
 #include "sys_futex.h"
 
 namespace fast {
 
-DECLARE_bool(parking_lot_no_signal_when_no_waiter);
 
 // Park idle workers.
 class BAIDU_CACHELINE_ALIGNMENT ParkingLot {
@@ -45,7 +43,7 @@ public:
 
     ParkingLot()
         : _pending_signal(0), _waiter_num(0)
-        , _no_signal_when_no_waiter(FLAGS_parking_lot_no_signal_when_no_waiter) {}
+        , _no_signal_when_no_waiter(FastBthreadConfig::Get().parking_lot_no_signal_when_no_waiter) {}
 
     // Wake up at most `num_task' workers.
     // Returns #workers woken up.

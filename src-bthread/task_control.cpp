@@ -32,33 +32,15 @@
 #include "task_group.h"           // TaskGroup
 #include "task_control.h"
 #include "timer_thread.h"         // global_timer_thread
-#include <gflags/gflags.h>
 #include "log.h"
 #if defined(OS_MACOSX)
 #include <mach/mach.h>
 #endif
 
-DEFINE_int32(task_group_delete_delay, 1,
-             "delay deletion of TaskGroup for so many seconds");
-DEFINE_int32(task_group_runqueue_capacity, 4096,
-             "capacity of runqueue in each TaskGroup");
-DEFINE_int32(task_group_ntags, 1, "TaskGroup will be grouped by number ntags");
-DEFINE_bool(task_group_set_worker_name, true,
-            "Whether to set the name of the worker thread");
-DEFINE_string(cpu_set, "",
-              "Set of CPUs to which cores are bound. "
-              "for example, 0-3,5,7; default: disable");
 
 namespace fast {
 
-DEFINE_bool(parking_lot_no_signal_when_no_waiter, false,
-            "ParkingLot doesn't signal when there is no waiter. "
-            "In busy worker scenarios, signal overhead can be reduced.");
-DEFINE_bool(enable_bthread_priority_queue, false, "Whether to enable priority queue");
 
-DECLARE_int32(bthread_concurrency);
-DECLARE_int32(bthread_min_concurrency);
-DECLARE_int32(bthread_parking_lot_of_each_tag);
 
 extern pthread_mutex_t g_task_control_mutex;
 extern BAIDU_THREAD_LOCAL TaskGroup* tls_task_group;
@@ -110,7 +92,7 @@ void* TaskControl::worker_thread(void* arg) {
     if (!c->_cpus.empty()) {
         bind_thread_to_cpu(pthread_self(), c->_cpus[worker_id % c->_cpus.size()]);
     }
-    if (FLAGS_task_group_set_worker_name) {
+    if (FastBthreadConfig::Get().task_group_set_worker_name) {
         std::string worker_thread_name = fast::butil::string_printf(
             "brpc_wkr:%d-%d", g->tag(), worker_id);
         fast::butil::PlatformThread::SetNameSimple(worker_thread_name.c_str());
@@ -140,7 +122,7 @@ TaskGroup* TaskControl::create_group(bthread_tag_t tag) {
         LOG(FATAL) << "Fail to new TaskGroup";
         return NULL;
     }
-    if (g->init(FLAGS_task_group_runqueue_capacity) != 0) {
+    if (g->init(FastBthreadConfig::Get().task_group_runqueue_capacity) != 0) {
         LOG(ERROR) << "Fail to init TaskGroup";
         delete g;
         return NULL;
@@ -184,8 +166,8 @@ static int64_t get_cumulated_signal_count_from_this(void *arg) {
 
 TaskControl::TaskControl()
     // NOTE: all fileds must be initialized before the vars.
-    : _tagged_ngroup(FLAGS_task_group_ntags)
-    , _tagged_groups(FLAGS_task_group_ntags)
+    : _tagged_ngroup(FastBthreadConfig::Get().task_group_ntags)
+    , _tagged_groups(FastBthreadConfig::Get().task_group_ntags)
     , _init(false)
     , _stop(false)
     , _concurrency(0)
@@ -202,10 +184,10 @@ TaskControl::TaskControl()
     , _signal_per_second(&_cumulated_signal_count)
     , _status(print_rq_sizes_in_the_tc, this)
     , _nbthreads("bthread_count")
-    , _enable_priority_queue(FLAGS_enable_bthread_priority_queue)
-    , _priority_queues(FLAGS_task_group_ntags)
-    , _pl_num_of_each_tag(FLAGS_bthread_parking_lot_of_each_tag)
-    , _tagged_pl(FLAGS_task_group_ntags)
+    , _enable_priority_queue(FastBthreadConfig::Get().enable_bthread_priority_queue)
+    , _priority_queues(FastBthreadConfig::Get().task_group_ntags)
+    , _pl_num_of_each_tag(FastBthreadConfig::Get().parking_lot_of_each_tag)
+    , _tagged_pl(FastBthreadConfig::Get().task_group_ntags)
 {}
 
 int TaskControl::init(int concurrency) {
@@ -219,15 +201,15 @@ int TaskControl::init(int concurrency) {
     }
     _concurrency = concurrency;
 
-    if (!FLAGS_cpu_set.empty()) {
-        if (parse_cpuset(FLAGS_cpu_set, _cpus) == -1) {
-            LOG(ERROR) << "invalid cpuset=" << FLAGS_cpu_set;
+    if (!FastBthreadConfig::Get().cpu_set.empty()) {
+        if (parse_cpuset(FastBthreadConfig::Get().cpu_set, _cpus) == -1) {
+            LOG(ERROR) << "invalid cpuset=" << FastBthreadConfig::Get().cpu_set;
             return -1;
         }
     }
 
     // task group group by tags
-    for (int i = 0; i < FLAGS_task_group_ntags; ++i) {
+    for (int i = 0; i < FastBthreadConfig::Get().task_group_ntags; ++i) {
         _tagged_ngroup[i].store(0, std::memory_order_relaxed);
         auto tag_str = std::to_string(i);
         _tagged_nworkers.push_back(new bvar::Adder<int64_t>("bthread_worker_count", tag_str));
@@ -257,7 +239,7 @@ int TaskControl::init(int concurrency) {
     
     _workers.resize(_concurrency);   
     for (int i = 0; i < _concurrency; ++i) {
-        auto arg = new WorkerThreadArgs(this, i % FLAGS_task_group_ntags);
+        auto arg = new WorkerThreadArgs(this, i % FastBthreadConfig::Get().task_group_ntags);
         const int rc = pthread_create(&_workers[i], NULL, worker_thread, arg);
         if (rc) {
             delete arg;
@@ -273,7 +255,7 @@ int TaskControl::init(int concurrency) {
     // Wait for at least one group is added so that choose_one_group()
     // never returns NULL.
     // TODO: Handle the case that worker quits before add_group
-    for (int i = 0; i < FLAGS_task_group_ntags;) {
+    for (int i = 0; i < FastBthreadConfig::Get().task_group_ntags;) {
         if (_tagged_ngroup[i].load(std::memory_order_acquire) == 0) {
             usleep(100);  // TODO: Elaborate
             continue;
@@ -316,7 +298,7 @@ int TaskControl::add_workers(int num, bthread_tag_t tag) {
 }
 
 TaskGroup* TaskControl::choose_one_group(bthread_tag_t tag) {
-    CHECK(tag >= BTHREAD_TAG_DEFAULT && tag < FLAGS_task_group_ntags);
+    CHECK(tag >= BTHREAD_TAG_DEFAULT && tag < FastBthreadConfig::Get().task_group_ntags);
     auto& groups = tag_group(tag);
     const auto ngroup = tag_ngroup(tag).load(std::memory_order_acquire);
     if (ngroup != 0) {
@@ -415,7 +397,7 @@ void TaskControl::stop_and_join() {
             _tagged_ngroup.begin(), _tagged_ngroup.end(),
             [](std::atomic<size_t>& index) { index.store(0, std::memory_order_relaxed); });
     }
-    for (int i = 0; i < FLAGS_task_group_ntags; ++i) {
+    for (int i = 0; i < FastBthreadConfig::Get().task_group_ntags; ++i) {
         for (auto& pl : _tagged_pl[i]) {
             pl.stop();
         }
@@ -514,11 +496,11 @@ int TaskControl::_destroy_group(TaskGroup* g) {
     // we don't lock _modify_group_mutex in steal_task which may
     // access the removed group concurrently. We use simple strategy here:
     // Schedule a function which deletes the TaskGroup after
-    // FLAGS_task_group_delete_delay seconds
+    // FastBthreadConfig::Get().task_group_delete_delay seconds
     if (erased) {
         get_global_timer_thread()->schedule(
             delete_task_group, g,
-            fast::butil::microseconds_from_now(FLAGS_task_group_delete_delay * 1000000L));
+            fast::butil::microseconds_from_now(FastBthreadConfig::Get().task_group_delete_delay * 1000000L));
     }
     return 0;
 }
@@ -579,11 +561,11 @@ void TaskControl::signal_task(int num_task, bthread_tag_t tag) {
         }
     }
     if (num_task > 0 &&
-        FLAGS_bthread_min_concurrency > 0 &&    // test min_concurrency for performance
-        _concurrency.load(std::memory_order_relaxed) < FLAGS_bthread_concurrency) {
+        FastBthreadConfig::Get().bthread_min_concurrency > 0 &&    // test min_concurrency for performance
+        _concurrency.load(std::memory_order_relaxed) < FastBthreadConfig::Get().bthread_concurrency) {
         // TODO: Reduce this lock
         BAIDU_SCOPED_LOCK(g_task_control_mutex);
-        if (_concurrency.load(std::memory_order_acquire) < FLAGS_bthread_concurrency) {
+        if (_concurrency.load(std::memory_order_acquire) < FastBthreadConfig::Get().bthread_concurrency) {
             add_workers(1, tag);
         }
     }
