@@ -22,6 +22,7 @@
 #ifndef BTHREAD_TYPES_H
 #define BTHREAD_TYPES_H
 
+#include "inc/fast_log.h"
 #include <stdint.h>                            // uint64_t
 #include "butil/macros.h"
 #if defined(__cplusplus)

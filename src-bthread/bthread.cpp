@@ -19,6 +19,7 @@
 
 // Date: Tue Jul 10 17:40:58 CST 2012
 
+#include "inc/fast_log.h"
 #include <sys/syscall.h>
 #include "butil/macros.h"                       // BAIDU_CASSERT
 #include "butil/thread_local.h"
@@ -435,7 +436,7 @@ int bthread_setconcurrency_by_tag(int num, bthread_tag_t tag) {
         fast::FastBthreadConfig::Get().bthread_concurrency += added;
         return (add == added ? 0 : EPERM);
     } else {
-        LOG(WARNING) << "Fail to set concurrency by tag: " << tag
+        LOG(ERROR) << "Fail to set concurrency by tag: " << tag
                      << ", tag concurrency should be larger than old oncurrency. old concurrency: "
                      << tag_ngroup << ", new concurrency: " << num;
         return EPERM;

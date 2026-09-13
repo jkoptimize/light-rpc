@@ -19,6 +19,7 @@
 
 // Date: Sun Aug  3 12:46:15 CST 2014
 
+#include "inc/fast_log.h"
 #include <deque>
 #include "butex.h"                       // butex_*
 #include "mutex.h"

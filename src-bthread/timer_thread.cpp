@@ -18,6 +18,7 @@
 // bthread - An M:N threading library to make applications more concurrent.
 
 
+#include "inc/fast_log.h"
 #include <queue>                           // heap functions
 #include "butil/scoped_lock.h"
 #include "butil/third_party/murmurhash3/murmurhash3.h"   // fmix64
@@ -25,7 +26,6 @@
 #include "bvar/bvar.h"
 #include "sys_futex.h"
 #include "timer_thread.h"
-#include "log.h"
 
 namespace fast {
 
@@ -318,7 +318,6 @@ void TimerThread::run() {
 #endif
 
     int64_t last_sleep_time = fast::butil::gettimeofday_us();
-    BT_VLOG << "Started TimerThread=" << pthread_self();
 
     // min heap of tasks (ordered by run_time)
     std::vector<Task*> tasks;
@@ -401,7 +400,6 @@ void TimerThread::run() {
             }
         }
         if (pull_again) {
-            BT_VLOG << "pull again, tasks=" << tasks.size();
             continue;
         }
 
@@ -437,7 +435,6 @@ void TimerThread::run() {
         futex_wait_private(&_nsignals, expected_nsignals, ptimeout);
         last_sleep_time = fast::butil::gettimeofday_us();
     }
-    BT_VLOG << "Ended TimerThread=" << pthread_self();
 }
 
 void TimerThread::stop_and_join() {

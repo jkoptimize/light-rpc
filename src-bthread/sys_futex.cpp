@@ -19,6 +19,7 @@
 
 // Date: Wed Mar 14 17:44:58 CST 2018
 
+#include "inc/fast_log.h"
 #include "sys_futex.h"
 #include "butil/scoped_lock.h"
 #include <atomic>

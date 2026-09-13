@@ -22,6 +22,7 @@
 #ifndef BTHREAD_WORK_STEALING_QUEUE_H
 #define BTHREAD_WORK_STEALING_QUEUE_H
 
+#include "inc/fast_log.h"
 #include "butil/macros.h"
 #include <atomic>
 

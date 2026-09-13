@@ -19,6 +19,7 @@
 
 // Date: Sun Aug  3 12:46:15 CST 2014
 
+#include "inc/fast_log.h"
 #include <sys/cdefs.h>
 #include <pthread.h>
 #include <dlfcn.h>                               // dlsym
@@ -42,7 +43,6 @@
 #include "butex.h"                       // butex_*
 #include "mutex.h"                       // bthread_mutex_t
 #include "sys_futex.h"
-#include "log.h"
 #include "processor.h"
 #include "task_group.h"
 
@@ -160,7 +160,7 @@ void ContentionProfiler::init_if_needed() {
         // Already output nanoseconds, always set cycles/second to 1000000000.
         _disk_buf.append("--- contention\ncycles/second=1000000000\n");
         if (_dedup_map.init(1024, 60) != 0) {
-            LOG(WARNING) << "Fail to initialize dedup_map";
+            LOG(ERROR) << "Fail to initialize dedup_map";
         }
         _init = true;
     }
@@ -186,11 +186,9 @@ void ContentionProfiler::dump_and_destroy(SampledContention* c) {
 }
 
 void ContentionProfiler::flush_to_disk(bool ending) {
-    BT_VLOG << "flush_to_disk(ending=" << ending << ")";
     
     // Serialize contentions in _dedup_map into _disk_buf.
     if (!_dedup_map.empty()) {
-        BT_VLOG << "dedup_map=" << _dedup_map.size();
         fast::butil::IOBufBuilder os;
         for (ContentionMap::const_iterator
                  it = _dedup_map.begin(); it != _dedup_map.end(); ++it) {
@@ -209,7 +207,6 @@ void ContentionProfiler::flush_to_disk(bool ending) {
     // Append /proc/self/maps to the end of the contention file, required by
     // pprof.pl, otherwise the functions in sys libs are not interpreted.
     if (ending) {
-        BT_VLOG << "Append /proc/self/maps";
         // Failures are not critical, don't return directly.
         fast::butil::IOPortal mem_maps;
         const fast::butil::fd_guard fd(open("/proc/self/maps", O_RDONLY));
@@ -262,7 +259,6 @@ void ContentionProfiler::flush_to_disk(bool ending) {
             PLOG(ERROR) << "Fail to write into " << _filename;
             return;
         }
-        BT_VLOG << "Write " << nw << " bytes into " << _filename;
     } while (!_disk_buf.empty() && ending);
 }
 

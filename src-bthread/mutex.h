@@ -22,6 +22,7 @@
 #ifndef  BTHREAD_MUTEX_H
 #define  BTHREAD_MUTEX_H
 
+#include "inc/fast_log.h"
 #include "types.h"
 #include "butil/scoped_lock.h"
 #include "bvar/utils/lock_timer.h"

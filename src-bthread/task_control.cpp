@@ -19,6 +19,7 @@
 
 // Date: Tue Jul 10 17:40:58 CST 2012
 
+#include "inc/fast_log.h"
 #include <pthread.h>
 #include <set>
 #include <regex>
@@ -32,7 +33,6 @@
 #include "task_group.h"           // TaskGroup
 #include "task_control.h"
 #include "timer_thread.h"         // global_timer_thread
-#include "log.h"
 #if defined(OS_MACOSX)
 #include <mach/mach.h>
 #endif
@@ -97,7 +97,6 @@ void* TaskControl::worker_thread(void* arg) {
             "brpc_wkr:%d-%d", g->tag(), worker_id);
         fast::butil::PlatformThread::SetNameSimple(worker_thread_name.c_str());
     }
-    BT_VLOG << "Created worker=" << pthread_self() << " tid=" << g->_tid
             << " bthread=" << g->main_tid() << " tag=" << g->tag();
     tls_task_group = g;
     c->_nworkers << 1;
@@ -106,7 +105,6 @@ void* TaskControl::worker_thread(void* arg) {
     g->run_main_task();
 
     stat = g->main_stat();
-    BT_VLOG << "Destroying worker=" << pthread_self() << " bthread="
             << g->main_tid() << " idle=" << stat.cputime_ns / 1000000.0
             << "ms uptime=" << g->current_uptime_ns() / 1000000.0 << "ms";
     tls_task_group = NULL;
@@ -287,7 +285,7 @@ int TaskControl::add_workers(int num, bthread_tag_t tag) {
                 &_workers[i + old_concurency], NULL, worker_thread, arg);
         if (rc) {
             delete arg;
-            PLOG(WARNING) << "Fail to create _workers[" << i + old_concurency << "]";
+            PLOG(ERROR) << "Fail to create _workers[" << i + old_concurency << "]";
             _concurrency.fetch_sub(1, std::memory_order_release);
             break;
         }
@@ -351,13 +349,13 @@ void TaskControl::bind_thread_to_cpu(pthread_t pthread, unsigned cpu_id) {
         CPU_SET(cpu_id, &cs);
         auto r = pthread_setaffinity_np(pthread, sizeof(cs), &cs);
         if (r != 0) {
-            LOG(WARNING) << "Failed to bind thread to cpu: " << cpu_id;
+            LOG(ERROR) << "Failed to bind thread to cpu: " << cpu_id;
         }
         (void)r;
 #elif defined(OS_MACOSX)
         thread_port_t mach_thread = pthread_mach_thread_np(pthread);
         if (mach_thread != MACH_PORT_NULL) {
-            LOG(WARNING) << "mach_thread is null"
+            LOG(ERROR) << "mach_thread is null"
                          << "Failed to bind thread to cpu: " << cpu_id;
             return;
         }
@@ -367,7 +365,7 @@ void TaskControl::bind_thread_to_cpu(pthread_t pthread, unsigned cpu_id) {
                 THREAD_AFFINITY_POLICY,
                 (thread_policy_t)&policy,
                 THREAD_AFFINITY_POLICY_COUNT) != KERN_SUCCESS) {
-            LOG(WARNING) << "Failed to bind thread to cpu: " << cpu_id;
+            LOG(ERROR) << "Failed to bind thread to cpu: " << cpu_id;
         }
 #endif
 }

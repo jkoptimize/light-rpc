@@ -19,6 +19,7 @@
 
 // Date: Tue Jul 10 17:40:58 CST 2012
 
+#include "inc/fast_log.h"
 #include <sys/types.h>
 #include <stddef.h>                         // size_t
 #include "butil/macros.h"                   // ARRAY_SIZE
