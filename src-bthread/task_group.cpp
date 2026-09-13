@@ -172,10 +172,6 @@ bool TaskGroup::wait_task(bthread_t* tid) {
     } while (true);
 }
 
-static double get_cumulated_cputime_from_this(void* arg) {
-    return static_cast<TaskGroup*>(arg)->cumulated_cputime_ns() / 1000000000.0;
-}
-
 int64_t TaskGroup::cumulated_cputime_ns() const {
     CPUTimeStat cpu_time_stat = _cpu_time_stat.load();
     // Add the elapsed time of running bthread.
@@ -187,10 +183,6 @@ int64_t TaskGroup::cumulated_cputime_ns() const {
 }
 
 void TaskGroup::run_main_task() {
-    bvar::PassiveStatus<double> cumulated_cputime(
-        get_cumulated_cputime_from_this, this);
-    std::unique_ptr<bvar::PerSecond<bvar::PassiveStatus<double> > > usage_bvar;
-
     TaskGroup* dummy = this;
     bthread_t tid;
     while (wait_task(&tid)) {
@@ -199,18 +191,6 @@ void TaskGroup::run_main_task() {
         DCHECK_EQ(_cur_meta->stack, _main_stack);
         if (_cur_meta->tid != _main_tid) {
             task_runner(1/*skip remained*/);
-        }
-        if (FLAGS_show_per_worker_usage_in_vars && !usage_bvar) {
-            char name[32];
-#if defined(OS_MACOSX)
-            snprintf(name, sizeof(name), "bthread_worker_usage_%" PRIu64,
-                     pthread_numeric_id());
-#else
-            snprintf(name, sizeof(name), "bthread_worker_usage_%ld",
-                     (long)syscall(SYS_gettid));
-#endif
-            usage_bvar.reset(new bvar::PerSecond<bvar::PassiveStatus<double> >
-                             (name, &cumulated_cputime, 1));
         }
     }
     // Don't forget to add elapse of last wait_task.
@@ -362,14 +342,6 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
         // Meta and identifier of the task is persistent in this run.
         TaskMeta* const m = g->_cur_meta;
 
-        if (FLAGS_show_bthread_creation_in_vars) {
-            // NOTE: the thread triggering exposure of pending time may spend
-            // considerable time because a single bvar::LatencyRecorder
-            // contains many bvar.
-            g->_control->exposed_pending_time() <<
-                (fast::butil::cpuwide_time_ns() - m->cpuwide_start_ns) / 1000L;
-        }
-
         // Not catch exceptions except ExitException which is for implementing
         // bthread_exit(). User code is intended to crash when an exception is
         // not caught explicitly. This is consistent with other threading
@@ -435,8 +407,7 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
         g->_control->_task_tracer.set_status(TASK_STATUS_UNKNOWN, m);
 #endif // BRPC_BTHREAD_TRACER
 
-        g->_control->_nbthreads << -1;
-        g->_control->tag_nbthreads(g->tag()) << -1;
+        g->_control->_nbthreads.fetch_sub(1, std::memory_order_relaxed);
         g->set_remained(_release_last_context, m);
         ending_sched(&g);
 
@@ -494,8 +465,7 @@ int TaskGroup::start_foreground(TaskGroup** pg,
     }
 
     TaskGroup* g = *pg;
-    g->_control->_nbthreads << 1;
-    g->_control->tag_nbthreads(g->tag()) << 1;
+    g->_control->_nbthreads.fetch_add(1, std::memory_order_relaxed);
 #ifdef BRPC_BTHREAD_TRACER
     g->_control->_task_tracer.set_status(TASK_STATUS_CREATED, m);
 #endif // BRPC_BTHREAD_TRACER
@@ -557,8 +527,7 @@ int TaskGroup::start_background(bthread_t* __restrict th,
     if (using_attr.flags & BTHREAD_LOG_START_AND_FINISH) {
         LOG(INFO) << "Started bthread " << m->tid;
     }
-    _control->_nbthreads << 1;
-    _control->tag_nbthreads(tag()) << 1;
+    _control->_nbthreads.fetch_add(1, std::memory_order_relaxed);
 #ifdef BRPC_BTHREAD_TRACER
     _control->_task_tracer.set_status(TASK_STATUS_CREATED, m);
 #endif // BRPC_BTHREAD_TRACER

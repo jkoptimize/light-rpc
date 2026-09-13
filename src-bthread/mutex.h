@@ -25,7 +25,6 @@
 #include "inc/fast_log.h"
 #include "types.h"
 #include "butil/scoped_lock.h"
-#include "bvar/utils/lock_timer.h"
 
 __BEGIN_DECLS
 extern int bthread_mutex_init(bthread_mutex_t* __restrict mutex,
@@ -234,23 +233,5 @@ private:
 };
 
 }  // namespace std
-
-namespace bvar {
-
-template <>
-struct MutexConstructor<bthread_mutex_t> {
-    bool operator()(bthread_mutex_t* mutex) const { 
-        return bthread_mutex_init(mutex, NULL) == 0;
-    }
-};
-
-template <>
-struct MutexDestructor<bthread_mutex_t> {
-    bool operator()(bthread_mutex_t* mutex) const { 
-        return bthread_mutex_destroy(mutex) == 0;
-    }
-};
-
-}  // namespace bvar
 
 #endif  //BTHREAD_MUTEX_H

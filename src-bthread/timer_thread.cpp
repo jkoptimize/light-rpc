@@ -23,7 +23,6 @@
 #include "butil/scoped_lock.h"
 #include "butil/third_party/murmurhash3/murmurhash3.h"   // fmix64
 #include "butil/resource_pool.h"
-#include "bvar/bvar.h"
 #include "sys_futex.h"
 #include "timer_thread.h"
 
@@ -306,11 +305,6 @@ bool TimerThread::Task::try_delete() {
     return false;
 }
 
-template <typename T>
-static T deref_value(void* arg) {
-    return *(T*)arg;
-}
-
 void TimerThread::run() {
     run_worker_startfn();
 #ifdef BAIDU_INTERNAL
@@ -325,20 +319,9 @@ void TimerThread::run() {
 
     // vars
     size_t nscheduled = 0;
-    bvar::PassiveStatus<size_t> nscheduled_var(deref_value<size_t>, &nscheduled);
-    bvar::PerSecond<bvar::PassiveStatus<size_t> > nscheduled_second(&nscheduled_var);
     size_t ntriggered = 0;
-    bvar::PassiveStatus<size_t> ntriggered_var(deref_value<size_t>, &ntriggered);
-    bvar::PerSecond<bvar::PassiveStatus<size_t> > ntriggered_second(&ntriggered_var);
     double busy_seconds = 0;
-    bvar::PassiveStatus<double> busy_seconds_var(deref_value<double>, &busy_seconds);
-    bvar::PerSecond<bvar::PassiveStatus<double> > busy_seconds_second(&busy_seconds_var);
-    if (!_options.bvar_prefix.empty()) {
-        nscheduled_second.expose_as(_options.bvar_prefix, "scheduled_second");
-        ntriggered_second.expose_as(_options.bvar_prefix, "triggered_second");
-        busy_seconds_second.expose_as(_options.bvar_prefix, "usage");
-    }
-    
+
     while (!_stop.load(std::memory_order_relaxed)) {
         // Clear _nearest_run_time before consuming tasks from buckets.
         // This helps us to be aware of earliest task of the new tasks before we
@@ -464,7 +447,6 @@ static void init_global_timer_thread() {
         return;
     }
     TimerThreadOptions options;
-    options.bvar_prefix = "bthread_timer";
     options.num_buckets = FastBthreadConfig::Get().brpc_timer_num_buckets;
     const int rc = g_timer_thread->start(&options);
     if (rc != 0) {

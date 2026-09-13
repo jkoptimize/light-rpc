@@ -97,20 +97,15 @@ void* TaskControl::worker_thread(void* arg) {
             "brpc_wkr:%d-%d", g->tag(), worker_id);
         fast::butil::PlatformThread::SetNameSimple(worker_thread_name.c_str());
     }
-            << " bthread=" << g->main_tid() << " tag=" << g->tag();
     tls_task_group = g;
-    c->_nworkers << 1;
-    c->tag_nworkers(g->tag()) << 1;
+    c->_nworkers.fetch_add(1, std::memory_order_relaxed);
 
     g->run_main_task();
 
     stat = g->main_stat();
-            << g->main_tid() << " idle=" << stat.cputime_ns / 1000000.0
-            << "ms uptime=" << g->current_uptime_ns() / 1000000.0 << "ms";
     tls_task_group = NULL;
     g->destroy_self();
-    c->_nworkers << -1;
-    c->tag_nworkers(g->tag()) << -1;
+    c->_nworkers.fetch_sub(1, std::memory_order_relaxed);
     return NULL;
 }
 
@@ -132,36 +127,6 @@ TaskGroup* TaskControl::create_group(bthread_tag_t tag) {
     return g;
 }
 
-static void print_rq_sizes_in_the_tc(std::ostream &os, void *arg) {
-    TaskControl *tc = (TaskControl *)arg;
-    tc->print_rq_sizes(os);
-}
-
-static double get_cumulated_worker_time_from_this(void *arg) {
-    return static_cast<TaskControl*>(arg)->get_cumulated_worker_time();
-}
-
-struct CumulatedWithTagArgs {
-    CumulatedWithTagArgs(TaskControl* _c, bthread_tag_t _t) : c(_c), t(_t) {}
-    TaskControl* c;
-    bthread_tag_t t;
-};
-
-static double get_cumulated_worker_time_from_this_with_tag(void* arg) {
-    auto a = static_cast<CumulatedWithTagArgs*>(arg);
-    auto c = a->c;
-    auto t = a->t;
-    return c->get_cumulated_worker_time(t);
-}
-
-static int64_t get_cumulated_switch_count_from_this(void *arg) {
-    return static_cast<TaskControl*>(arg)->get_cumulated_switch_count();
-}
-
-static int64_t get_cumulated_signal_count_from_this(void *arg) {
-    return static_cast<TaskControl*>(arg)->get_cumulated_signal_count();
-}
-
 TaskControl::TaskControl()
     // NOTE: all fileds must be initialized before the vars.
     : _tagged_ngroup(FastBthreadConfig::Get().task_group_ntags)
@@ -170,18 +135,6 @@ TaskControl::TaskControl()
     , _stop(false)
     , _concurrency(0)
     , _next_worker_id(0)
-    , _nworkers("bthread_worker_count")
-    , _pending_time(NULL)
-      // Delay exposure of following two vars because they rely on TC which
-      // is not initialized yet.
-    , _cumulated_worker_time(get_cumulated_worker_time_from_this, this)
-    , _worker_usage_second(&_cumulated_worker_time, 1)
-    , _cumulated_switch_count(get_cumulated_switch_count_from_this, this)
-    , _switch_per_second(&_cumulated_switch_count)
-    , _cumulated_signal_count(get_cumulated_signal_count_from_this, this)
-    , _signal_per_second(&_cumulated_signal_count)
-    , _status(print_rq_sizes_in_the_tc, this)
-    , _nbthreads("bthread_count")
     , _enable_priority_queue(FastBthreadConfig::Get().enable_bthread_priority_queue)
     , _priority_queues(FastBthreadConfig::Get().task_group_ntags)
     , _pl_num_of_each_tag(FastBthreadConfig::Get().parking_lot_of_each_tag)
@@ -209,13 +162,6 @@ int TaskControl::init(int concurrency) {
     // task group group by tags
     for (int i = 0; i < FastBthreadConfig::Get().task_group_ntags; ++i) {
         _tagged_ngroup[i].store(0, std::memory_order_relaxed);
-        auto tag_str = std::to_string(i);
-        _tagged_nworkers.push_back(new bvar::Adder<int64_t>("bthread_worker_count", tag_str));
-        _tagged_cumulated_worker_time.push_back(new bvar::PassiveStatus<double>(
-            get_cumulated_worker_time_from_this_with_tag, new CumulatedWithTagArgs{this, i}));
-        _tagged_worker_usage_second.push_back(new bvar::PerSecond<bvar::PassiveStatus<double>>(
-            "bthread_worker_usage", tag_str, _tagged_cumulated_worker_time[i], 1));
-        _tagged_nbthreads.push_back(new bvar::Adder<int64_t>("bthread_count", tag_str));
         if (_priority_queues[i].init(BTHREAD_MAX_CONCURRENCY) != 0) {
             LOG(ERROR) << "Fail to init _priority_q";
             return -1;
@@ -245,11 +191,6 @@ int TaskControl::init(int concurrency) {
             return -1;
         }
     }
-    _worker_usage_second.expose("bthread_worker_usage");
-    _switch_per_second.expose("bthread_switch_second");
-    _signal_per_second.expose("bthread_signal_second");
-    _status.expose("bthread_group_status");
-
     // Wait for at least one group is added so that choose_one_group()
     // never returns NULL.
     // TODO: Handle the case that worker quits before add_group
@@ -418,12 +359,6 @@ void TaskControl::stop_and_join() {
 TaskControl::~TaskControl() {
     // NOTE: g_task_control is not destructed now because the situation
     //       is extremely racy.
-    delete _pending_time.exchange(NULL, std::memory_order_relaxed);
-    _worker_usage_second.hide();
-    _switch_per_second.hide();
-    _signal_per_second.hide();
-    _status.hide();
-    
     stop_and_join();
 }
 
@@ -588,64 +523,6 @@ void TaskControl::print_rq_sizes(std::ostream& os) {
     for (size_t i = 0; i < ngroup; ++i) {
         os << nums[i] << ' ';
     }
-}
-
-double TaskControl::get_cumulated_worker_time() {
-    int64_t cputime_ns = 0;
-    BAIDU_SCOPED_LOCK(_modify_group_mutex);
-    for_each_task_group([&](TaskGroup* g) {
-        cputime_ns += g->cumulated_cputime_ns();
-    });
-    return cputime_ns / 1000000000.0;
-}
-
-double TaskControl::get_cumulated_worker_time(bthread_tag_t tag) {
-    int64_t cputime_ns = 0;
-    BAIDU_SCOPED_LOCK(_modify_group_mutex);
-    const size_t ngroup = tag_ngroup(tag).load(std::memory_order_relaxed);
-    auto& groups = tag_group(tag);
-    for (size_t i = 0; i < ngroup; ++i) {
-        cputime_ns += groups[i]->cumulated_cputime_ns();
-    }
-    return cputime_ns / 1000000000.0;
-}
-
-int64_t TaskControl::get_cumulated_switch_count() {
-    int64_t c = 0;
-    BAIDU_SCOPED_LOCK(_modify_group_mutex);
-    for_each_task_group([&](TaskGroup* g) {
-        if (g) {
-            c += g->_nswitch;
-        }
-    });
-    return c;
-}
-
-int64_t TaskControl::get_cumulated_signal_count() {
-    int64_t c = 0;
-    BAIDU_SCOPED_LOCK(_modify_group_mutex);
-    for_each_task_group([&](TaskGroup* g) {
-        if (g) {
-            c += g->_nsignaled + g->_remote_nsignaled;
-        }
-    });
-    return c;
-}
-
-bvar::LatencyRecorder* TaskControl::create_exposed_pending_time() {
-    bool is_creator = false;
-    _pending_time_mutex.lock();
-    bvar::LatencyRecorder* pt = _pending_time.load(std::memory_order_consume);
-    if (!pt) {
-        pt = new bvar::LatencyRecorder;
-        _pending_time.store(pt, std::memory_order_release);
-        is_creator = true;
-    }
-    _pending_time_mutex.unlock();
-    if (is_creator) {
-        pt->expose("bthread_creation");
-    }
-    return pt;
 }
 
 std::vector<bthread_t> TaskControl::get_living_bthreads() {

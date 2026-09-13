@@ -31,7 +31,6 @@
 #include <array>
 #include <memory>
 #include <atomic>
-#include "bvar/bvar.h"                          // bvar::PassiveStatus
 #include "task_tracer.h"
 #include "task_meta.h"                  // TaskMeta
 #include "work_stealing_queue.h"        // WorkStealingQueue
@@ -76,11 +75,6 @@ public:
     { return _tagged_ngroup[tag].load(std::memory_order_acquire); }
 
     void print_rq_sizes(std::ostream& os);
-
-    double get_cumulated_worker_time();
-    double get_cumulated_worker_time(bthread_tag_t tag);
-    int64_t get_cumulated_switch_count();
-    int64_t get_cumulated_signal_count();
 
     // [Not thread safe] Add more worker threads.
     // Return the number of workers actually added, which may be less than |num|
@@ -129,11 +123,6 @@ private:
     template <typename F>
     void for_each_task_group(F const& f);
 
-    bvar::LatencyRecorder& exposed_pending_time();
-    bvar::LatencyRecorder* create_exposed_pending_time();
-    bvar::Adder<int64_t>& tag_nworkers(bthread_tag_t tag);
-    bvar::Adder<int64_t>& tag_nbthreads(bthread_tag_t tag);
-
     std::vector<std::atomic<size_t>> _tagged_ngroup;
     std::vector<TaggedGroups> _tagged_groups;
     std::mutex _modify_group_mutex;
@@ -145,22 +134,8 @@ private:
     std::vector<unsigned> _cpus;
     std::atomic<int> _next_worker_id;
 
-    bvar::Adder<int64_t> _nworkers;
-    std::mutex _pending_time_mutex;
-    std::atomic<bvar::LatencyRecorder*> _pending_time;
-    bvar::PassiveStatus<double> _cumulated_worker_time;
-    bvar::PerSecond<bvar::PassiveStatus<double> > _worker_usage_second;
-    bvar::PassiveStatus<int64_t> _cumulated_switch_count;
-    bvar::PerSecond<bvar::PassiveStatus<int64_t> > _switch_per_second;
-    bvar::PassiveStatus<int64_t> _cumulated_signal_count;
-    bvar::PerSecond<bvar::PassiveStatus<int64_t> > _signal_per_second;
-    bvar::PassiveStatus<std::string> _status;
-    bvar::Adder<int64_t> _nbthreads;
-
-    std::vector<bvar::Adder<int64_t>*> _tagged_nworkers;
-    std::vector<bvar::PassiveStatus<double>*> _tagged_cumulated_worker_time;
-    std::vector<bvar::PerSecond<bvar::PassiveStatus<double>>*> _tagged_worker_usage_second;
-    std::vector<bvar::Adder<int64_t>*> _tagged_nbthreads;
+    std::atomic<int64_t> _nworkers{0};
+    std::atomic<int64_t> _nbthreads{0};
 
     bool _enable_priority_queue;
     std::vector<WorkStealingQueue<bthread_t>> _priority_queues;
@@ -173,22 +148,6 @@ private:
 #endif // BRPC_BTHREAD_TRACER
 
 };
-
-inline bvar::LatencyRecorder& TaskControl::exposed_pending_time() {
-    bvar::LatencyRecorder* pt = _pending_time.load(std::memory_order_consume);
-    if (!pt) {
-        pt = create_exposed_pending_time();
-    }
-    return *pt;
-}
-
-inline bvar::Adder<int64_t>& TaskControl::tag_nworkers(bthread_tag_t tag) {
-    return *_tagged_nworkers[tag];
-}
-
-inline bvar::Adder<int64_t>& TaskControl::tag_nbthreads(bthread_tag_t tag) {
-    return *_tagged_nbthreads[tag];
-}
 
 template <typename F>
 inline void TaskControl::for_each_task_group(F const& f) {

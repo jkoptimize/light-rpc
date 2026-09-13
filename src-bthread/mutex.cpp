@@ -25,8 +25,6 @@
 #include <dlfcn.h>                               // dlsym
 #include <fcntl.h>                               // O_RDONLY
 #include <atomic>
-#include "bvar/bvar.h"
-#include "bvar/collector.h"
 #include "butil/macros.h"                         // BAIDU_CASSERT
 #include "butil/containers/flat_map.h"
 #include "butil/iobuf.h"

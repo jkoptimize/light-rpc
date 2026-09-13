@@ -28,7 +28,6 @@
 #include "butil/macros.h"
 #include "butil/thread_key.h"
 #include "butil/thread_local.h"
-#include "bvar/passive_status.h"
 
 // Implement bthread_key_t related functions
 
@@ -404,26 +403,6 @@ static void arg_as_dtor(void* data, const void* arg) {
     typedef void (*KeyDtor)(void*);
     return ((KeyDtor)arg)(data);
 }
-
-static int get_key_count(void*) {
-    BAIDU_SCOPED_LOCK(fast::s_key_mutex);
-    return (int)nkey - (int)nfreekey;
-}
-static size_t get_keytable_count(void*) {
-    return nkeytable.load(std::memory_order_relaxed);
-}
-static size_t get_keytable_memory(void*) {
-    const size_t n = nkeytable.load(std::memory_order_relaxed);
-    const size_t nsub = nsubkeytable.load(std::memory_order_relaxed);
-    return n * sizeof(KeyTable) + nsub * sizeof(SubKeyTable);
-}
-
-static bvar::PassiveStatus<int> s_bthread_key_count(
-    "bthread_key_count", get_key_count, NULL);
-static bvar::PassiveStatus<size_t> s_bthread_keytable_count(
-    "bthread_keytable_count", get_keytable_count, NULL);
-static bvar::PassiveStatus<size_t> s_bthread_keytable_memory(
-    "bthread_keytable_memory", get_keytable_memory, NULL);
 
 }  // namespace fast
 
