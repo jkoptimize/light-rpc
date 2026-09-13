@@ -24,6 +24,8 @@ file(GLOB FAST_SRC "src-common/*.cc" "src-resource/*.cc" "src-endpoint/*.cc")
 add_library(fastrpc STATIC ${FAST_SRC} ${IMPL_PROTO_SRCS})
 target_link_libraries(fastrpc "-libverbs -lrdmacm -lpthread" ${Boost_LIBRARIES} protobuf::libprotobuf)
 
+add_subdirectory(src-bthread)
+
 protobuf_generate_cpp(TEST_PROTO_SRCS TEST_PROTO_HDRS test/test.proto)
 
 add_executable(client test/client.cc ${TEST_PROTO_SRCS})
@@ -33,5 +35,5 @@ target_link_libraries(server fastrpc)
 
 file(GLOB UNIT_TEST_SOURCES test/unit/*.cc)
 add_executable(unit_tests ${UNIT_TEST_SOURCES} ${IMPL_PROTO_SRCS})
-target_link_libraries(unit_tests fastrpc ${GTEST_LIBRARIES} pthread)
+target_link_libraries(unit_tests fastrpc fast_bthread ${GTEST_LIBRARIES} pthread)
 add_test(NAME UnitTests COMMAND unit_tests)
