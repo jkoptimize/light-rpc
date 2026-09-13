@@ -24,7 +24,7 @@
 
 #include <pthread.h>                 // pthread_spin_init
 #include "butex.h"           // butex_construct/destruct
-#include "butil/atomicops.h"          // butil::atomic
+#include <atomic>
 #include "types.h"           // bthread_attr_t
 #include "stack.h"           // ContextualStack
 #include "timer_thread.h"
@@ -63,7 +63,7 @@ enum TaskStatus {
 
 struct TaskMeta {
     // [Not Reset]
-    butil::atomic<ButexWaiter*> current_waiter{NULL};
+    std::atomic<ButexWaiter*> current_waiter{NULL};
     uint64_t current_sleep{TimerThread::INVALID_TASK_ID};
 
     // A flag to mark if the Timer scheduling failed.

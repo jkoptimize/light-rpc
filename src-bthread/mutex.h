@@ -93,7 +93,7 @@ private:
     mutex_owner_t _owner;
 };
 #else
-typedef butil::Mutex FastPthreadMutex;
+typedef std::mutex FastPthreadMutex;
 #endif
 }
 
@@ -126,7 +126,7 @@ public:
 #if !defined(NDEBUG)
         const int rc = bthread_mutex_lock(_pmutex);
         if (rc) {
-            LOG(FATAL) << "Fail to lock bthread_mutex_t=" << _pmutex << ", " << berror(rc);
+            LOG(FATAL) << "Fail to lock bthread_mutex_t=" << _pmutex << ", " << strerror(rc);
             _pmutex = NULL;
         }
 #else

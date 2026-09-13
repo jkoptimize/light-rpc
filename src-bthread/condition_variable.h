@@ -67,12 +67,12 @@ public:
     // rather than std::timeout
     int wait_for(std::unique_lock<fast::Mutex>& lock,
                  long timeout_us) {
-        return wait_until(lock, butil::microseconds_from_now(timeout_us));
+        return wait_until(lock, fast::butil::microseconds_from_now(timeout_us));
     }
 
     int wait_for(std::unique_lock<bthread_mutex_t>& lock,
                  long timeout_us) {
-        return wait_until(lock, butil::microseconds_from_now(timeout_us));
+        return wait_until(lock, fast::butil::microseconds_from_now(timeout_us));
     }
 
     int wait_until(std::unique_lock<fast::Mutex>& lock,

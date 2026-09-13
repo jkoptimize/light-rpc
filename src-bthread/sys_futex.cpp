@@ -21,7 +21,7 @@
 
 #include "sys_futex.h"
 #include "butil/scoped_lock.h"
-#include "butil/atomicops.h"
+#include <atomic>
 #include <pthread.h>
 #include <unordered_map>
 
@@ -73,10 +73,10 @@ int futex_wait_private(void* addr1, int expected, const timespec* timeout) {
     int rc = 0;
     {
         std::unique_lock<pthread_mutex_t> mu1(simu_futex.lock);
-        if (static_cast<butil::atomic<int>*>(addr1)->load() == expected) {
+        if (static_cast<std::atomic<int>*>(addr1)->load() == expected) {
             ++simu_futex.counts;
             if (timeout) {
-                timespec timeout_abs = butil::timespec_from_now(*timeout);
+                timespec timeout_abs = fast::butil::timespec_from_now(*timeout);
                 if ((rc = pthread_cond_timedwait(&simu_futex.cond, &simu_futex.lock, &timeout_abs)) != 0) {
                     errno = rc;
                     rc = -1;

@@ -50,15 +50,15 @@ static const bthread_attr_t BTHREAD_ATTR_TASKGROUP = {
 
 DEFINE_bool(show_bthread_creation_in_vars, false, "When this flags is on, The time "
             "from bthread creation to first run will be recorded and shown in /vars");
-BUTIL_VALIDATE_GFLAG(show_bthread_creation_in_vars, butil::PassValidate);
+BUTIL_VALIDATE_GFLAG(show_bthread_creation_in_vars, fast::butil::PassValidate);
 
 DEFINE_bool(show_per_worker_usage_in_vars, false,
             "Show per-worker usage in /vars/bthread_per_worker_usage_<tid>");
-BUTIL_VALIDATE_GFLAG(show_per_worker_usage_in_vars, butil::PassValidate);
+BUTIL_VALIDATE_GFLAG(show_per_worker_usage_in_vars, fast::butil::PassValidate);
 
 DEFINE_bool(bthread_enable_cpu_clock_stat, false,
             "Enable CPU clock statistics for bthread");
-BUTIL_VALIDATE_GFLAG(bthread_enable_cpu_clock_stat, butil::PassValidate);
+BUTIL_VALIDATE_GFLAG(bthread_enable_cpu_clock_stat, fast::butil::PassValidate);
 
 BAIDU_VOLATILE_THREAD_LOCAL(TaskGroup*, tls_task_group, NULL);
 // Sync with TaskMeta::local_storage when a bthread is created or destroyed.
@@ -190,7 +190,7 @@ int64_t TaskGroup::cumulated_cputime_ns() const {
     // Add the elapsed time of running bthread.
     int64_t cumulated_cputime_ns = cpu_time_stat.cumulated_cputime_ns();
     if (!cpu_time_stat.is_main_task()) {
-        cumulated_cputime_ns += butil::cpuwide_time_ns() - cpu_time_stat.last_run_ns();
+        cumulated_cputime_ns += fast::butil::cpuwide_time_ns() - cpu_time_stat.last_run_ns();
     }
     return cumulated_cputime_ns;
 }
@@ -224,7 +224,7 @@ void TaskGroup::run_main_task() {
     }
     // Don't forget to add elapse of last wait_task.
     current_task()->stat.cputime_ns +=
-        butil::cpuwide_time_ns() - _cpu_time_stat.load_unsafe().last_run_ns();
+        fast::butil::cpuwide_time_ns() - _cpu_time_stat.load_unsafe().last_run_ns();
 }
 
 TaskGroup::TaskGroup(TaskControl* c)
@@ -256,12 +256,12 @@ int PthreadAttrGetStack(void*& stack_addr, size_t& stack_size) {
     pthread_attr_t attr;
     int rc = pthread_getattr_np(pthread_self(), &attr);
     if (0 != rc) {
-        LOG(ERROR) << "Fail to get pthread attributes: " << berror(rc);
+        LOG(ERROR) << "Fail to get pthread attributes: " << strerror(rc);
         return rc;
     }
     rc = pthread_attr_getstack(&attr, &stack_addr, &stack_size);
     if (0 != rc) {
-        LOG(ERROR) << "Fail to get pthread stack: " << berror(rc);
+        LOG(ERROR) << "Fail to get pthread stack: " << strerror(rc);
     }
     pthread_attr_destroy(&attr);
     return rc;
@@ -292,8 +292,8 @@ int TaskGroup::init(size_t runqueue_capacity) {
         LOG(FATAL) << "Fail to get main stack container";
         return -1;
     }
-    butil::ResourceId<TaskMeta> slot;
-    TaskMeta* m = butil::get_resource<TaskMeta>(&slot);
+    fast::butil::ResourceId<TaskMeta> slot;
+    TaskMeta* m = fast::butil::get_resource<TaskMeta>(&slot);
     if (NULL == m) {
         LOG(FATAL) << "Fail to get TaskMeta";
         return -1;
@@ -305,7 +305,7 @@ int TaskGroup::init(size_t runqueue_capacity) {
     m->fn = NULL;
     m->arg = NULL;
     m->local_storage = LOCAL_STORAGE_INIT;
-    m->cpuwide_start_ns = butil::cpuwide_time_ns();
+    m->cpuwide_start_ns = fast::butil::cpuwide_time_ns();
     m->stat = EMPTY_STAT;
     m->attr = BTHREAD_ATTR_TASKGROUP;
     m->tid = make_tid(*m->version_butex, slot);
@@ -376,7 +376,7 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
             // considerable time because a single bvar::LatencyRecorder
             // contains many bvar.
             g->_control->exposed_pending_time() <<
-                (butil::cpuwide_time_ns() - m->cpuwide_start_ns) / 1000L;
+                (fast::butil::cpuwide_time_ns() - m->cpuwide_start_ns) / 1000L;
         }
 
         // Not catch exceptions except ExitException which is for implementing
@@ -474,14 +474,14 @@ int TaskGroup::start_foreground(TaskGroup** pg,
     if (__builtin_expect(!fn, 0)) {
         return EINVAL;
     }
-    const int64_t start_ns = butil::cpuwide_time_ns();
+    const int64_t start_ns = fast::butil::cpuwide_time_ns();
     const bthread_attr_t using_attr = (attr ? *attr : BTHREAD_ATTR_NORMAL);
-    butil::ResourceId<TaskMeta> slot;
-    TaskMeta* m = butil::get_resource(&slot);
+    fast::butil::ResourceId<TaskMeta> slot;
+    TaskMeta* m = fast::butil::get_resource(&slot);
     if (BAIDU_UNLIKELY(NULL == m)) {
         return ENOMEM;
     }
-    CHECK(m->current_waiter.load(butil::memory_order_relaxed) == NULL);
+    CHECK(m->current_waiter.load(std::memory_order_relaxed) == NULL);
     m->sleep_failed = false;
     m->stop = false;
     m->interrupted = false;
@@ -539,14 +539,14 @@ int TaskGroup::start_background(bthread_t* __restrict th,
     if (__builtin_expect(!fn, 0)) {
         return EINVAL;
     }
-    const int64_t start_ns = butil::cpuwide_time_ns();
+    const int64_t start_ns = fast::butil::cpuwide_time_ns();
     const bthread_attr_t using_attr = (attr ? *attr : BTHREAD_ATTR_NORMAL);
-    butil::ResourceId<TaskMeta> slot;
-    TaskMeta* m = butil::get_resource(&slot);
+    fast::butil::ResourceId<TaskMeta> slot;
+    TaskMeta* m = fast::butil::get_resource(&slot);
     if (BAIDU_UNLIKELY(NULL == m)) {
         return ENOMEM;
     }
-    CHECK(m->current_waiter.load(butil::memory_order_relaxed) == NULL);
+    CHECK(m->current_waiter.load(std::memory_order_relaxed) == NULL);
     m->sleep_failed = false;
     m->stop = false;
     m->interrupted = false;
@@ -712,7 +712,7 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
     void* saved_unique_user_ptr = tls_unique_user_ptr;
 
     TaskMeta* const cur_meta = g->_cur_meta;
-    int64_t now = butil::cpuwide_time_ns();
+    int64_t now = fast::butil::cpuwide_time_ns();
     CPUTimeStat cpu_time_stat = g->_cpu_time_stat.load_unsafe();
     int64_t elp_ns = now - cpu_time_stat.last_run_ns();
     cur_meta->stat.cputime_ns += elp_ns;
@@ -722,7 +722,7 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
     g->_cpu_time_stat.store(cpu_time_stat);
 
     if (FLAGS_bthread_enable_cpu_clock_stat) {
-        const int64_t cpu_thread_time = butil::cputhread_time_ns();
+        const int64_t cpu_thread_time = fast::butil::cputhread_time_ns();
         if (g->_last_cpu_clock_ns != 0) {
             cur_meta->stat.cpu_usage_ns += cpu_thread_time - g->_last_cpu_clock_ns;
         }
@@ -859,7 +859,7 @@ void TaskGroup::ready_to_run_remote(TaskMeta* meta, bool nosignal) {
     }
 }
 
-void TaskGroup::flush_nosignal_tasks_remote_locked(butil::Mutex& locked_mutex) {
+void TaskGroup::flush_nosignal_tasks_remote_locked(std::mutex& locked_mutex) {
     const int val = _remote_num_nosignal;
     if (!val) {
         locked_mutex.unlock();
@@ -936,7 +936,7 @@ void TaskGroup::_add_sleep_event(void* void_args) {
     TimerThread::TaskId sleep_id;
     sleep_id = get_global_timer_thread()->schedule(
         ready_to_run_from_timer_thread, void_args,
-        butil::microseconds_from_now(e.timeout_us));
+        fast::butil::microseconds_from_now(e.timeout_us));
 
     if (!sleep_id) {
         e.meta->sleep_failed = true;
@@ -1015,7 +1015,7 @@ static int interrupt_and_consume_waiters(
     const uint32_t given_ver = get_version(tid);
     BAIDU_SCOPED_LOCK(m->version_lock);
     if (given_ver == *m->version_butex) {
-        *pw = m->current_waiter.exchange(NULL, butil::memory_order_acquire);
+        *pw = m->current_waiter.exchange(NULL, std::memory_order_acquire);
         *sleep_id = m->current_sleep;
         m->current_sleep = 0;  // only one stopper gets the sleep_id
         m->interrupted = true;
@@ -1031,7 +1031,7 @@ static int set_butex_waiter(bthread_t tid, ButexWaiter* w) {
         BAIDU_SCOPED_LOCK(m->version_lock);
         if (given_ver == *m->version_butex) {
             // Release fence makes m->interrupted visible to butex_wait
-            m->current_waiter.store(w, butil::memory_order_release);
+            m->current_waiter.store(w, std::memory_order_release);
             return 0;
         }
     }
@@ -1143,7 +1143,7 @@ void print_task(std::ostream& os, bthread_t tid, bool enable_trace,
            << " name=" << attr.name
            << " keytable_pool=" << attr.keytable_pool
            << "}\nhas_tls=" << has_tls
-           << "\nuptime_ns=" << butil::cpuwide_time_ns() - cpuwide_start_ns
+           << "\nuptime_ns=" << fast::butil::cpuwide_time_ns() - cpuwide_start_ns
            << "\ncputime_ns=" << stat.cputime_ns
            << "\nnswitch=" << stat.nswitch
 #ifdef BRPC_BTHREAD_TRACER

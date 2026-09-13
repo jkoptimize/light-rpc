@@ -23,7 +23,7 @@
 #define BTHREAD_PARKING_LOT_H
 
 #include <gflags/gflags.h>
-#include "butil/atomicops.h"
+#include <atomic>
 #include "sys_futex.h"
 
 namespace fast {
@@ -50,8 +50,8 @@ public:
     // Wake up at most `num_task' workers.
     // Returns #workers woken up.
     int signal(int num_task) {
-        _pending_signal.fetch_add((num_task << 1), butil::memory_order_release);
-        if (_no_signal_when_no_waiter && _waiter_num.load(butil::memory_order_relaxed) == 0) {
+        _pending_signal.fetch_add((num_task << 1), std::memory_order_release);
+        if (_no_signal_when_no_waiter && _waiter_num.load(std::memory_order_relaxed) == 0) {
             return 0;
         }
         return futex_wake_private(&_pending_signal, num_task);
@@ -59,7 +59,7 @@ public:
 
     // Get a state for later wait().
     State get_state() {
-        return _pending_signal.load(butil::memory_order_acquire);
+        return _pending_signal.load(std::memory_order_acquire);
     }
 
     // Wait for tasks.
@@ -70,11 +70,11 @@ public:
             return;
         }
         if (_no_signal_when_no_waiter) {
-            _waiter_num.fetch_add(1, butil::memory_order_relaxed);
+            _waiter_num.fetch_add(1, std::memory_order_relaxed);
         }
         futex_wait_private(&_pending_signal, expected_state.val, NULL);
         if (_no_signal_when_no_waiter) {
-            _waiter_num.fetch_sub(1, butil::memory_order_relaxed);
+            _waiter_num.fetch_sub(1, std::memory_order_relaxed);
         }
     }
 
@@ -86,8 +86,8 @@ public:
 
 private:
     // higher 31 bits for signalling, LSB for stopping.
-    butil::atomic<int> _pending_signal;
-    butil::atomic<int> _waiter_num;
+    std::atomic<int> _pending_signal;
+    std::atomic<int> _waiter_num;
     // Whether to signal when there is no waiter.
     // In busy worker scenarios, signal overhead
     // can be reduced.

@@ -147,7 +147,7 @@ template <typename StackClass> struct StackFactory {
     };
     
     static ContextualStack* get_stack(void (*entry)(intptr_t)) {
-        ContextualStack* cs = butil::get_object<Wrapper>(entry);
+        ContextualStack* cs = fast::butil::get_object<Wrapper>(entry);
         // Marks stack as addressable.
         BTHREAD_ASAN_UNPOISON_MEMORY_REGION(cs->storage);
         return cs;
@@ -156,7 +156,7 @@ template <typename StackClass> struct StackFactory {
     static void return_stack(ContextualStack* cs) {
         // Marks stack as unaddressable.
         BTHREAD_ASAN_POISON_MEMORY_REGION(cs->storage);
-        butil::return_object(static_cast<Wrapper*>(cs));
+        fast::butil::return_object(static_cast<Wrapper*>(cs));
     }
 };
 

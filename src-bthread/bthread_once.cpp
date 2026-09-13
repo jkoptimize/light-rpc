@@ -19,8 +19,8 @@
 #include "butex.h"
 
 bthread_once_t::bthread_once_t()
-    : _butex(fast::butex_create_checked<butil::atomic<int>>())  {
-    _butex->store(UNINITIALIZED, butil::memory_order_relaxed);
+    : _butex(fast::butex_create_checked<std::atomic<int>>())  {
+    _butex->store(UNINITIALIZED, std::memory_order_relaxed);
 }
 
 bthread_once_t::~bthread_once_t() {
@@ -30,25 +30,25 @@ bthread_once_t::~bthread_once_t() {
 namespace fast {
 
 int bthread_once_impl(bthread_once_t* once_control, void (*init_routine)()) {
-    butil::atomic<int>* butex = once_control->_butex;
+    std::atomic<int>* butex = once_control->_butex;
     // We need acquire memory order for this load because if the value
     // signals that initialization has finished, we need to see any
     // data modifications done during initialization.
-    int val = butex->load(butil::memory_order_acquire);
+    int val = butex->load(std::memory_order_acquire);
     if (BAIDU_LIKELY(val == bthread_once_t::INITIALIZED)) {
         // The initialization has already been done.
         return 0;
     }
     val = bthread_once_t::UNINITIALIZED;
     if (butex->compare_exchange_strong(val, bthread_once_t::INPROGRESS,
-                                       butil::memory_order_relaxed,
-                                       butil::memory_order_relaxed)) {
+                                       std::memory_order_relaxed,
+                                       std::memory_order_relaxed)) {
         // This (b)thread is the first and the Only one here. Do the initialization.
         init_routine();
         // Mark *once_control as having finished the initialization. We need
         // release memory order here because we need to synchronize with other
         // (b)threads that want to use the initialized data.
-        butex->store(bthread_once_t::INITIALIZED, butil::memory_order_release);
+        butex->store(bthread_once_t::INITIALIZED, std::memory_order_release);
         // Wake up all other (b)threads.
         fast::butex_wake_all(butex);
         return 0;
@@ -56,7 +56,7 @@ int bthread_once_impl(bthread_once_t* once_control, void (*init_routine)()) {
 
     while (true) {
         // Same as above, we need acquire memory order.
-        val = butex->load(butil::memory_order_acquire);
+        val = butex->load(std::memory_order_acquire);
         if (BAIDU_LIKELY(val == bthread_once_t::INITIALIZED)) {
             // The initialization has already been done.
             return 0;

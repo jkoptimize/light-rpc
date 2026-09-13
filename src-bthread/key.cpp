@@ -24,7 +24,7 @@
 
 #include "errno.h"       // EAGAIN
 #include "task_group.h"  // TaskGroup
-#include "butil/atomicops.h"
+#include <atomic>
 #include "butil/macros.h"
 #include "butil/thread_key.h"
 #include "butil/thread_local.h"
@@ -84,8 +84,8 @@ static size_t nkey = 0;
 static uint32_t s_free_keys[KEYS_MAX];
 
 // Stats.
-static butil::static_atomic<size_t> nkeytable = BUTIL_STATIC_ATOMIC_INIT(0);
-static butil::static_atomic<size_t> nsubkeytable = BUTIL_STATIC_ATOMIC_INIT(0);
+static std::atomic<size_t> nkeytable = BUTIL_STATIC_ATOMIC_INIT(0);
+static std::atomic<size_t> nsubkeytable = BUTIL_STATIC_ATOMIC_INIT(0);
 
 // The second-level array.
 // Align with cacheline to avoid false sharing.
@@ -93,12 +93,12 @@ class BAIDU_CACHELINE_ALIGNMENT SubKeyTable {
 public:
     SubKeyTable() {
         memset(_data, 0, sizeof(_data));
-        nsubkeytable.fetch_add(1, butil::memory_order_relaxed);
+        nsubkeytable.fetch_add(1, std::memory_order_relaxed);
     }
 
     // NOTE: Call clear first.
     ~SubKeyTable() {
-        nsubkeytable.fetch_sub(1, butil::memory_order_relaxed);
+        nsubkeytable.fetch_sub(1, std::memory_order_relaxed);
     }
 
     void clear(uint32_t offset) {
@@ -153,11 +153,11 @@ class BAIDU_CACHELINE_ALIGNMENT KeyTable {
 public:
     KeyTable() : next(NULL) {
         memset(_subs, 0, sizeof(_subs));
-        nkeytable.fetch_add(1, butil::memory_order_relaxed);
+        nkeytable.fetch_add(1, std::memory_order_relaxed);
     }
 
     ~KeyTable() {
-        nkeytable.fetch_sub(1, butil::memory_order_relaxed);
+        nkeytable.fetch_sub(1, std::memory_order_relaxed);
         for (int ntry = 0; ntry < PTHREAD_DESTRUCTOR_ITERATIONS; ++ntry) {
             for (uint32_t i = 0; i < KEY_1STLEVEL_SIZE; ++i) {
                 if (_subs[i]) {
@@ -329,7 +329,7 @@ KeyTable* borrow_keytable(bthread_keytable_pool_t* pool) {
     if (pool != NULL && (pool->list || pool->free_keytables)) {
         KeyTable* p;
         pthread_rwlock_rdlock(&pool->rwlock);
-        auto list = (butil::ThreadLocal<fast::KeyTableList>*)pool->list;
+        auto list = (fast::butil::ThreadLocal<fast::KeyTableList>*)pool->list;
         if (list) {
             p = list->get()->remove_front();
             if (p) {
@@ -384,7 +384,7 @@ void return_keytable(bthread_keytable_pool_t* pool, KeyTable* kt) {
         delete kt;
         return;
     }
-    auto list = (butil::ThreadLocal<fast::KeyTableList>*)pool->list;
+    auto list = (fast::butil::ThreadLocal<fast::KeyTableList>*)pool->list;
     list->get()->append(kt);
     if (list->get()->get_length() > FLAGS_key_table_list_size) {
         pthread_rwlock_unlock(&pool->rwlock);
@@ -418,11 +418,11 @@ static int get_key_count(void*) {
     return (int)nkey - (int)nfreekey;
 }
 static size_t get_keytable_count(void*) {
-    return nkeytable.load(butil::memory_order_relaxed);
+    return nkeytable.load(std::memory_order_relaxed);
 }
 static size_t get_keytable_memory(void*) {
-    const size_t n = nkeytable.load(butil::memory_order_relaxed);
-    const size_t nsub = nsubkeytable.load(butil::memory_order_relaxed);
+    const size_t n = nkeytable.load(std::memory_order_relaxed);
+    const size_t nsub = nsubkeytable.load(std::memory_order_relaxed);
     return n * sizeof(KeyTable) + nsub * sizeof(SubKeyTable);
 }
 
@@ -443,7 +443,7 @@ int bthread_keytable_pool_init(bthread_keytable_pool_t* pool) {
         return EINVAL;
     }
     pthread_rwlock_init(&pool->rwlock, NULL);
-    pool->list = new butil::ThreadLocal<fast::KeyTableList>();
+    pool->list = new fast::butil::ThreadLocal<fast::KeyTableList>();
     pool->free_keytables = NULL;
     pool->size = 0;
     pool->destroyed = 0;
@@ -459,7 +459,7 @@ int bthread_keytable_pool_destroy(bthread_keytable_pool_t* pool) {
     pthread_rwlock_wrlock(&pool->rwlock);
     pool->destroyed = 1;
     pool->size = 0;
-    delete (butil::ThreadLocal<fast::KeyTableList>*)pool->list;
+    delete (fast::butil::ThreadLocal<fast::KeyTableList>*)pool->list;
     saved_free_keytables = (fast::KeyTable*)pool->free_keytables;
     pool->list = NULL;
     pool->free_keytables = NULL;
@@ -512,7 +512,7 @@ int get_thread_local_keytable_list_length(bthread_keytable_pool_t* pool) {
         pthread_rwlock_unlock(&pool->rwlock);
         return length;
     }
-    auto list = (butil::ThreadLocal<fast::KeyTableList>*)pool->list;
+    auto list = (fast::butil::ThreadLocal<fast::KeyTableList>*)pool->list;
     if (list) {
         length = (int)(list->get()->get_length());
         if (!list->get()->check_length()) {
@@ -639,7 +639,7 @@ int bthread_setspecific(bthread_key_t key, void* data) {
             // in `return_keytable' or `bthread_keytable_pool_destroy'.
             if (!fast::tls_ever_created_keytable) {
                 fast::tls_ever_created_keytable = true;
-                CHECK_EQ(0, butil::thread_atexit(fast::cleanup_pthread, kt));
+                CHECK_EQ(0, fast::butil::thread_atexit(fast::cleanup_pthread, kt));
             }
         }
     }

@@ -169,7 +169,7 @@ public:
     bthread_t current_tid() const { return _cur_meta->tid; }
     // Uptime of current task in nanoseconds.
     int64_t current_uptime_ns() const
-    { return butil::cpuwide_time_ns() - _cur_meta->cpuwide_start_ns; }
+    { return fast::butil::cpuwide_time_ns() - _cur_meta->cpuwide_start_ns; }
 
     // True iff current task is the one running run_main_task()
     bool is_current_main_task() const { return current_tid() == _main_tid; }
@@ -187,7 +187,7 @@ public:
 
     // Push a bthread into the runqueue from another non-worker thread.
     void ready_to_run_remote(TaskMeta* meta, bool nosignal = false);
-    void flush_nosignal_tasks_remote_locked(butil::Mutex& locked_mutex);
+    void flush_nosignal_tasks_remote_locked(std::mutex& locked_mutex);
     void flush_nosignal_tasks_remote();
 
     // Automatically decide the caller is remote or local, and call
@@ -226,7 +226,7 @@ public:
             return 0;
         }
         int64_t total_ns = _cur_meta->stat.cpu_usage_ns;
-        total_ns += butil::cputhread_time_ns() - _last_cpu_clock_ns;
+        total_ns += fast::butil::cputhread_time_ns() - _last_cpu_clock_ns;
         return total_ns;
     }
 
@@ -364,7 +364,7 @@ friend class TaskControl;
 #ifndef BTHREAD_DONT_SAVE_PARKING_STATE
     ParkingLot::State _last_pl_state;
 #endif
-    size_t _steal_seed{butil::fast_rand()};
+    size_t _steal_seed{fast::butil::fast_rand()};
     size_t _steal_offset{prime_offset(_steal_seed)};
     ContextualStack* _main_stack{NULL};
     bthread_t _main_tid{INVALID_BTHREAD};

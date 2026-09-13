@@ -43,7 +43,7 @@ public:
         if (q_mem == NULL) {
             return -1;
         }
-        butil::BoundedQueue<bthread_t> q(q_mem, memsize, butil::OWNS_STORAGE);
+        fast::butil::BoundedQueue<bthread_t> q(q_mem, memsize, fast::butil::OWNS_STORAGE);
         _tasks.swap(q);
         return 0;
     }
@@ -74,8 +74,8 @@ public:
 private:
 friend class TaskGroup;
     DISALLOW_COPY_AND_ASSIGN(RemoteTaskQueue);
-    butil::BoundedQueue<bthread_t> _tasks;
-    butil::Mutex _mutex;
+    fast::butil::BoundedQueue<bthread_t> _tasks;
+    std::mutex _mutex;
 };
 
 }  // namespace fast

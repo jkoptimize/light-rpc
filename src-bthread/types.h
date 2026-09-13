@@ -267,7 +267,7 @@ friend int fast::bthread_once_impl(bthread_once_t* once_control, void (*init_rou
     DISALLOW_COPY_AND_ASSIGN(bthread_once_t);
 
 private:
-    butil::atomic<int>* _butex;
+    std::atomic<int>* _butex;
 };
 #endif
 

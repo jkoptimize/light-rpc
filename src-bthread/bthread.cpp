@@ -76,7 +76,7 @@ BUTIL_VALIDATE_GFLAG(bthread_parking_lot_of_each_tag, [](const char*, int32_t va
 
 static bool never_set_bthread_concurrency = true;
 
-BAIDU_CASSERT(sizeof(TaskControl*) == sizeof(butil::atomic<TaskControl*>), atomic_size_match);
+BAIDU_CASSERT(sizeof(TaskControl*) == sizeof(std::atomic<TaskControl*>), atomic_size_match);
 
 pthread_mutex_t g_task_control_mutex = PTHREAD_MUTEX_INITIALIZER;
 // Referenced in rpc, needs to be extern.
@@ -95,13 +95,13 @@ inline TaskControl* get_task_control() {
 }
 
 inline TaskControl* get_or_new_task_control() {
-    butil::atomic<TaskControl*>* p = (butil::atomic<TaskControl*>*)&g_task_control;
-    TaskControl* c = p->load(butil::memory_order_consume);
+    std::atomic<TaskControl*>* p = (std::atomic<TaskControl*>*)&g_task_control;
+    TaskControl* c = p->load(std::memory_order_consume);
     if (c != NULL) {
         return c;
     }
     BAIDU_SCOPED_LOCK(g_task_control_mutex);
-    c = p->load(butil::memory_order_consume);
+    c = p->load(std::memory_order_consume);
     if (c != NULL) {
         return c;
     }
@@ -117,7 +117,7 @@ inline TaskControl* get_or_new_task_control() {
         delete c;
         return NULL;
     }
-    p->store(c, butil::memory_order_release);
+    p->store(c, std::memory_order_release);
     return c;
 }
 
@@ -136,8 +136,8 @@ bthread_t init_for_pthread_stack_trace() {
         return INVALID_BTHREAD;
     }
 
-    butil::ResourceId<TaskMeta> slot;
-    pthread_fake_meta = butil::get_resource(&slot);
+    fast::butil::ResourceId<TaskMeta> slot;
+    pthread_fake_meta = fast::butil::get_resource(&slot);
     if (BAIDU_UNLIKELY(NULL == pthread_fake_meta)) {
         LOG(ERROR) << "Fail to get TaskMeta";
         return INVALID_BTHREAD;
@@ -149,7 +149,7 @@ bthread_t init_for_pthread_stack_trace() {
     c->_task_tracer.set_running_status(syscall(SYS_gettid), pthread_fake_meta);
 
     // Release the TaskMeta at exit of pthread.
-    butil::thread_atexit([]() {
+    fast::butil::thread_atexit([]() {
         // Similar to TaskGroup::task_runner.
         bool tracing;
         {
@@ -169,7 +169,7 @@ bthread_t init_for_pthread_stack_trace() {
         get_task_control()->_task_tracer.set_status(
             TASK_STATUS_UNKNOWN, pthread_fake_meta);
 
-        butil::return_resource(get_slot(pthread_fake_meta->tid));
+        fast::butil::return_resource(get_slot(pthread_fake_meta->tid));
         pthread_fake_meta = NULL;
     });
 

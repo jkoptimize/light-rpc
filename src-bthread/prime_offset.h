@@ -31,7 +31,7 @@ inline size_t prime_offset(size_t seed) {
 }
 
 inline size_t prime_offset() {
-    return prime_offset(butil::fast_rand());
+    return prime_offset(fast::butil::fast_rand());
 }
 }
 
