@@ -23,13 +23,13 @@
 #define BTHREAD_TASK_META_H
 
 #include <pthread.h>                 // pthread_spin_init
-#include "bthread/butex.h"           // butex_construct/destruct
+#include "butex.h"           // butex_construct/destruct
 #include "butil/atomicops.h"          // butil::atomic
-#include "bthread/types.h"           // bthread_attr_t
-#include "bthread/stack.h"           // ContextualStack
-#include "bthread/timer_thread.h"
+#include "types.h"           // bthread_attr_t
+#include "stack.h"           // ContextualStack
+#include "timer_thread.h"
 
-namespace bthread {
+namespace fast {
 
 struct TaskStatistics {
     int64_t cputime_ns;
@@ -149,6 +149,6 @@ public:
     }
 };
 
-}  // namespace bthread
+}  // namespace fast
 
 #endif  // BTHREAD_TASK_META_H

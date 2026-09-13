@@ -24,9 +24,9 @@
 
 #include <gflags/gflags.h>
 #include "butil/atomicops.h"
-#include "bthread/sys_futex.h"
+#include "sys_futex.h"
 
-namespace bthread {
+namespace fast {
 
 DECLARE_bool(parking_lot_no_signal_when_no_waiter);
 
@@ -94,6 +94,6 @@ private:
     bool _no_signal_when_no_waiter;
 };
 
-}  // namespace bthread
+}  // namespace fast
 
 #endif  // BTHREAD_PARKING_LOT_H

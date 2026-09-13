@@ -27,16 +27,15 @@
 #ifdef SHOW_BTHREAD_BUTEX_WAITER_COUNT_IN_VARS
 #include "butil/memory/singleton_on_pthread_once.h"
 #endif
-#include "butil/logging.h"
 #include "butil/object_pool.h"
-#include "bthread/errno.h"                 // EWOULDBLOCK
-#include "bthread/sys_futex.h"             // futex_*
-#include "bthread/processor.h"             // cpu_relax
-#include "bthread/task_control.h"          // TaskControl
-#include "bthread/task_group.h"            // TaskGroup
-#include "bthread/timer_thread.h"
-#include "bthread/butex.h"
-#include "bthread/mutex.h"
+#include "errno.h"                 // EWOULDBLOCK
+#include "sys_futex.h"             // futex_*
+#include "processor.h"             // cpu_relax
+#include "task_control.h"          // TaskControl
+#include "task_group.h"            // TaskGroup
+#include "timer_thread.h"
+#include "butex.h"
+#include "mutex.h"
 
 // This file implements butex.h
 // Provides futex-like semantics which is sequenced wait and wake operations
@@ -57,7 +56,7 @@
 // of value to be reordered after it. Thus the value is visible to wait()
 // as well.
 
-namespace bthread {
+namespace fast {
 
 #ifdef SHOW_BTHREAD_BUTEX_WAITER_COUNT_IN_VARS
 struct ButexWaiterCount : public bvar::Adder<int64_t> {
@@ -122,16 +121,16 @@ struct BAIDU_CACHELINE_ALIGNMENT Butex {
 BAIDU_CASSERT(offsetof(Butex, value) == 0, offsetof_value_must_0);
 BAIDU_CASSERT(sizeof(Butex) == BAIDU_CACHELINE_SIZE, butex_fits_in_one_cacheline);
 
-} // namespace bthread
+} // namespace fast
 
 namespace butil {
 // Butex object returned to the ObjectPool<Butex> may be accessed,
 // so ObjectPool<Butex> can not poison the memory region of Butex.
 template <>
-struct ObjectPoolWithASanPoison<bthread::Butex> : false_type {};
+struct ObjectPoolWithASanPoison<fast::Butex> : false_type {};
 } // namespace butil
 
-namespace bthread {
+namespace fast {
 
 static void wakeup_pthread(ButexPthreadWaiter* pw) {
     // release fence makes wait_pthread see changes before wakeup.
@@ -749,10 +748,10 @@ int butex_wait(void* arg, int expected_value, const timespec* abstime, bool prep
     return 0;
 }
 
-}  // namespace bthread
+}  // namespace fast
 
 namespace butil {
-template <> struct ObjectPoolBlockMaxItem<bthread::Butex> {
+template <> struct ObjectPoolBlockMaxItem<fast::Butex> {
     static const size_t value = 128;
 };
 }

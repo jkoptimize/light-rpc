@@ -25,7 +25,7 @@
 #include "butil/containers/bounded_queue.h"
 #include "butil/macros.h"
 
-namespace bthread {
+namespace fast {
 
 class TaskGroup;
 
@@ -78,6 +78,6 @@ friend class TaskGroup;
     butil::Mutex _mutex;
 };
 
-}  // namespace bthread
+}  // namespace fast
 
 #endif  // BTHREAD_REMOTE_TASK_QUEUE_H

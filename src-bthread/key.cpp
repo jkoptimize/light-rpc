@@ -22,8 +22,8 @@
 #include <pthread.h>
 #include <gflags/gflags.h>
 
-#include "bthread/errno.h"       // EAGAIN
-#include "bthread/task_group.h"  // TaskGroup
+#include "errno.h"       // EAGAIN
+#include "task_group.h"  // TaskGroup
 #include "butil/atomicops.h"
 #include "butil/macros.h"
 #include "butil/thread_key.h"
@@ -32,7 +32,7 @@
 
 // Implement bthread_key_t related functions
 
-namespace bthread {
+namespace fast {
 
 DEFINE_uint32(key_table_list_size, 4000,
               "The maximum length of the KeyTableList. Once this value is "
@@ -109,7 +109,7 @@ public:
                 // the position again.
                 _data[i].ptr = NULL;
 
-                KeyInfo info = bthread::s_key_info[offset + i];
+                KeyInfo info = fast::s_key_info[offset + i];
                 if (info.dtor && _data[i].version == info.version) {
                     info.dtor(p, info.dtor_args);
                 }
@@ -329,7 +329,7 @@ KeyTable* borrow_keytable(bthread_keytable_pool_t* pool) {
     if (pool != NULL && (pool->list || pool->free_keytables)) {
         KeyTable* p;
         pthread_rwlock_rdlock(&pool->rwlock);
-        auto list = (butil::ThreadLocal<bthread::KeyTableList>*)pool->list;
+        auto list = (butil::ThreadLocal<fast::KeyTableList>*)pool->list;
         if (list) {
             p = list->get()->remove_front();
             if (p) {
@@ -384,7 +384,7 @@ void return_keytable(bthread_keytable_pool_t* pool, KeyTable* kt) {
         delete kt;
         return;
     }
-    auto list = (butil::ThreadLocal<bthread::KeyTableList>*)pool->list;
+    auto list = (butil::ThreadLocal<fast::KeyTableList>*)pool->list;
     list->get()->append(kt);
     if (list->get()->get_length() > FLAGS_key_table_list_size) {
         pthread_rwlock_unlock(&pool->rwlock);
@@ -414,7 +414,7 @@ static void arg_as_dtor(void* data, const void* arg) {
 }
 
 static int get_key_count(void*) {
-    BAIDU_SCOPED_LOCK(bthread::s_key_mutex);
+    BAIDU_SCOPED_LOCK(fast::s_key_mutex);
     return (int)nkey - (int)nfreekey;
 }
 static size_t get_keytable_count(void*) {
@@ -433,7 +433,7 @@ static bvar::PassiveStatus<size_t> s_bthread_keytable_count(
 static bvar::PassiveStatus<size_t> s_bthread_keytable_memory(
     "bthread_keytable_memory", get_keytable_memory, NULL);
 
-}  // namespace bthread
+}  // namespace fast
 
 extern "C" {
 
@@ -443,7 +443,7 @@ int bthread_keytable_pool_init(bthread_keytable_pool_t* pool) {
         return EINVAL;
     }
     pthread_rwlock_init(&pool->rwlock, NULL);
-    pool->list = new butil::ThreadLocal<bthread::KeyTableList>();
+    pool->list = new butil::ThreadLocal<fast::KeyTableList>();
     pool->free_keytables = NULL;
     pool->size = 0;
     pool->destroyed = 0;
@@ -455,31 +455,31 @@ int bthread_keytable_pool_destroy(bthread_keytable_pool_t* pool) {
         LOG(ERROR) << "Param[pool] is NULL";
         return EINVAL;
     }
-    bthread::KeyTable* saved_free_keytables = NULL;
+    fast::KeyTable* saved_free_keytables = NULL;
     pthread_rwlock_wrlock(&pool->rwlock);
     pool->destroyed = 1;
     pool->size = 0;
-    delete (butil::ThreadLocal<bthread::KeyTableList>*)pool->list;
-    saved_free_keytables = (bthread::KeyTable*)pool->free_keytables;
+    delete (butil::ThreadLocal<fast::KeyTableList>*)pool->list;
+    saved_free_keytables = (fast::KeyTable*)pool->free_keytables;
     pool->list = NULL;
     pool->free_keytables = NULL;
     pthread_rwlock_unlock(&pool->rwlock);
 
     // Cheat get/setspecific and destroy the keytables.
-    bthread::TaskGroup* g =
-        bthread::BAIDU_GET_VOLATILE_THREAD_LOCAL(tls_task_group);
-    bthread::KeyTable* old_kt = bthread::tls_bls.keytable;
+    fast::TaskGroup* g =
+        fast::BAIDU_GET_VOLATILE_THREAD_LOCAL(tls_task_group);
+    fast::KeyTable* old_kt = fast::tls_bls.keytable;
     while (saved_free_keytables) {
-        bthread::KeyTable* kt = saved_free_keytables;
+        fast::KeyTable* kt = saved_free_keytables;
         saved_free_keytables = kt->next;
-        bthread::tls_bls.keytable = kt;
+        fast::tls_bls.keytable = kt;
         if (g) {
             g->current_task()->local_storage.keytable = kt;
         }
         delete kt;
-        g = bthread::BAIDU_GET_VOLATILE_THREAD_LOCAL(tls_task_group);
+        g = fast::BAIDU_GET_VOLATILE_THREAD_LOCAL(tls_task_group);
     }
-    bthread::tls_bls.keytable = old_kt;
+    fast::tls_bls.keytable = old_kt;
     if (g) {
         g->current_task()->local_storage.keytable = old_kt;
     }
@@ -512,7 +512,7 @@ int get_thread_local_keytable_list_length(bthread_keytable_pool_t* pool) {
         pthread_rwlock_unlock(&pool->rwlock);
         return length;
     }
-    auto list = (butil::ThreadLocal<bthread::KeyTableList>*)pool->list;
+    auto list = (butil::ThreadLocal<fast::KeyTableList>*)pool->list;
     if (list) {
         length = (int)(list->get()->get_length());
         if (!list->get()->check_length()) {
@@ -541,7 +541,7 @@ void bthread_keytable_pool_reserve(bthread_keytable_pool_t* pool,
         return;
     }
     for (size_t i = stat.nfree; i < nfree; ++i) {
-        bthread::KeyTable* kt = new (std::nothrow) bthread::KeyTable;
+        fast::KeyTable* kt = new (std::nothrow) fast::KeyTable;
         if (kt == NULL) {
             break;
         }
@@ -556,7 +556,7 @@ void bthread_keytable_pool_reserve(bthread_keytable_pool_t* pool,
             delete kt;
             break;
         }
-        kt->next = (bthread::KeyTable*)pool->free_keytables;
+        kt->next = (fast::KeyTable*)pool->free_keytables;
         pool->free_keytables = kt;
         ++pool->size;
         pthread_rwlock_unlock(&pool->rwlock);
@@ -571,21 +571,21 @@ int bthread_key_create2(bthread_key_t* key,
                         const void* dtor_args) {
     uint32_t index = 0;
     {
-        BAIDU_SCOPED_LOCK(bthread::s_key_mutex);
-        if (bthread::nfreekey > 0) {
-            index = bthread::s_free_keys[--bthread::nfreekey];
-        } else if (bthread::nkey < bthread::KEYS_MAX) {
-            index = bthread::nkey++;
+        BAIDU_SCOPED_LOCK(fast::s_key_mutex);
+        if (fast::nfreekey > 0) {
+            index = fast::s_free_keys[--fast::nfreekey];
+        } else if (fast::nkey < fast::KEYS_MAX) {
+            index = fast::nkey++;
         } else {
             return EAGAIN;  // what pthread_key_create returns in this case.
         }
     }
-    bthread::s_key_info[index].dtor = dtor;
-    bthread::s_key_info[index].dtor_args = dtor_args;
+    fast::s_key_info[index].dtor = dtor;
+    fast::s_key_info[index].dtor_args = dtor_args;
     key->index = index;
-    key->version = bthread::s_key_info[index].version;
+    key->version = fast::s_key_info[index].version;
     if (key->version == 0) {
-        ++bthread::s_key_info[index].version;
+        ++fast::s_key_info[index].version;
         ++key->version;
     }
     return 0;
@@ -595,21 +595,21 @@ int bthread_key_create(bthread_key_t* key, void (*dtor)(void*)) {
     if (dtor == NULL) {
         return bthread_key_create2(key, NULL, NULL);
     } else {
-        return bthread_key_create2(key, bthread::arg_as_dtor, (const void*)dtor);
+        return bthread_key_create2(key, fast::arg_as_dtor, (const void*)dtor);
     }
 }
 
 int bthread_key_delete(bthread_key_t key) {
-    if (key.index < bthread::KEYS_MAX &&
-        key.version == bthread::s_key_info[key.index].version) {
-        BAIDU_SCOPED_LOCK(bthread::s_key_mutex);
-        if (key.version == bthread::s_key_info[key.index].version) {
-            if (++bthread::s_key_info[key.index].version == 0) {
-                ++bthread::s_key_info[key.index].version;
+    if (key.index < fast::KEYS_MAX &&
+        key.version == fast::s_key_info[key.index].version) {
+        BAIDU_SCOPED_LOCK(fast::s_key_mutex);
+        if (key.version == fast::s_key_info[key.index].version) {
+            if (++fast::s_key_info[key.index].version == 0) {
+                ++fast::s_key_info[key.index].version;
             }
-            bthread::s_key_info[key.index].dtor = NULL;
-            bthread::s_key_info[key.index].dtor_args = NULL;
-            bthread::s_free_keys[bthread::nfreekey++] = key.index;
+            fast::s_key_info[key.index].dtor = NULL;
+            fast::s_key_info[key.index].dtor_args = NULL;
+            fast::s_free_keys[fast::nfreekey++] = key.index;
             return 0;
         }
     }
@@ -623,23 +623,23 @@ int bthread_key_delete(bthread_key_t key) {
 //  -> bthread_setspecific succeeds to borrow_keytable and overwrites old data
 //     at the position with newly created data, the old data is leaked.
 int bthread_setspecific(bthread_key_t key, void* data) {
-    bthread::KeyTable* kt = bthread::tls_bls.keytable;
+    fast::KeyTable* kt = fast::tls_bls.keytable;
     if (NULL == kt) {
-        kt = new (std::nothrow) bthread::KeyTable;
+        kt = new (std::nothrow) fast::KeyTable;
         if (NULL == kt) {
             return ENOMEM;
         }
-        bthread::tls_bls.keytable = kt;
-        bthread::TaskGroup* const g = bthread::BAIDU_GET_VOLATILE_THREAD_LOCAL(tls_task_group);
+        fast::tls_bls.keytable = kt;
+        fast::TaskGroup* const g = fast::BAIDU_GET_VOLATILE_THREAD_LOCAL(tls_task_group);
         if (g) {
             g->current_task()->local_storage.keytable = kt;
         } else {
             // Only cleanup keytable created by pthread.
             // keytable created by bthread will be deleted
             // in `return_keytable' or `bthread_keytable_pool_destroy'.
-            if (!bthread::tls_ever_created_keytable) {
-                bthread::tls_ever_created_keytable = true;
-                CHECK_EQ(0, butil::thread_atexit(bthread::cleanup_pthread, kt));
+            if (!fast::tls_ever_created_keytable) {
+                fast::tls_ever_created_keytable = true;
+                CHECK_EQ(0, butil::thread_atexit(fast::cleanup_pthread, kt));
             }
         }
     }
@@ -647,17 +647,17 @@ int bthread_setspecific(bthread_key_t key, void* data) {
 }
 
 void* bthread_getspecific(bthread_key_t key) {
-    bthread::KeyTable* kt = bthread::tls_bls.keytable;
+    fast::KeyTable* kt = fast::tls_bls.keytable;
     if (kt) {
         return kt->get_data(key);
     }
-    bthread::TaskGroup* const g = bthread::BAIDU_GET_VOLATILE_THREAD_LOCAL(tls_task_group);
+    fast::TaskGroup* const g = fast::BAIDU_GET_VOLATILE_THREAD_LOCAL(tls_task_group);
     if (g) {
-        bthread::TaskMeta* const task = g->current_task();
-        kt = bthread::borrow_keytable(task->attr.keytable_pool);
+        fast::TaskMeta* const task = g->current_task();
+        kt = fast::borrow_keytable(task->attr.keytable_pool);
         if (kt) {
             g->current_task()->local_storage.keytable = kt;
-            bthread::tls_bls.keytable = kt;
+            fast::tls_bls.keytable = kt;
             return kt->get_data(key);
         }
     }
@@ -665,11 +665,11 @@ void* bthread_getspecific(bthread_key_t key) {
 }
 
 void bthread_assign_data(void* data) {
-    bthread::tls_bls.assigned_data = data;
+    fast::tls_bls.assigned_data = data;
 }
 
 void* bthread_get_assigned_data() {
-    return bthread::tls_bls.assigned_data;
+    return fast::tls_bls.assigned_data;
 }
 
 }  // extern "C"

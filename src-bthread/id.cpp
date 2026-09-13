@@ -20,14 +20,13 @@
 // Date: Sun Aug  3 12:46:15 CST 2014
 
 #include <deque>
-#include "butil/logging.h"
-#include "bthread/butex.h"                       // butex_*
-#include "bthread/mutex.h"
-#include "bthread/list_of_abafree_id.h"
+#include "butex.h"                       // butex_*
+#include "mutex.h"
+#include "list_of_abafree_id.h"
 #include "butil/resource_pool.h"
-#include "bthread/bthread.h"
+#include "bthread.h"
 
-namespace bthread {
+namespace fast {
 
 // This queue reduces the chance to allocate memory for deque
 template <typename T, int N>
@@ -126,15 +125,15 @@ struct BAIDU_CACHELINE_ALIGNMENT Id {
     Id() {
         // Although value of the butex(as version part of bthread_id_t)
         // does not matter, we set it to 0 to make program more deterministic.
-        butex = bthread::butex_create_checked<uint32_t>();
-        join_butex = bthread::butex_create_checked<uint32_t>();
+        butex = fast::butex_create_checked<uint32_t>();
+        join_butex = fast::butex_create_checked<uint32_t>();
         *butex = 0;
         *join_butex = 0;
     }
 
     ~Id() {
-        bthread::butex_destroy(butex);
-        bthread::butex_destroy(join_butex);
+        fast::butex_destroy(butex);
+        fast::butex_destroy(join_butex);
     }
 
     inline bool has_version(uint32_t id_ver) const {
@@ -172,7 +171,7 @@ inline bool id_exists_with_true_negatives(bthread_id_t id) {
     if (meta == NULL) {
         return false;
     }
-    const uint32_t id_ver = bthread::get_version(id);
+    const uint32_t id_ver = fast::get_version(id);
     return id_ver >= meta->first_ver && id_ver <= meta->last_ver();
 }
 // required by unittest
@@ -193,12 +192,12 @@ static int default_bthread_id_on_error2(
 }
 
 void id_status(bthread_id_t id, std::ostream &os) {
-    bthread::Id* const meta = address_resource(bthread::get_slot(id));
+    fast::Id* const meta = address_resource(fast::get_slot(id));
     if (!meta) {
         os << "Invalid id=" << id.value << '\n';
         return;
     }
-    const uint32_t id_ver = bthread::get_version(id);
+    const uint32_t id_ver = fast::get_version(id);
     uint32_t* butex = meta->butex;
     bool valid = true;
     void* data = NULL;
@@ -237,7 +236,7 @@ void id_status(bthread_id_t id, std::ostream &os) {
 
     if (valid) {
         os << "First id: "
-           << bthread::make_id(first_ver, bthread::get_slot(id)).value << '\n'
+           << fast::make_id(first_ver, fast::get_slot(id)).value << '\n'
            << "Range: " << locked_ver - first_ver << '\n'
            << "Status: ";
         if (butex_value != first_ver) {
@@ -294,7 +293,7 @@ struct IdTraits {
     static const size_t INIT_GC_SIZE = 4096;
     static const bthread_id_t ID_INIT;
     static bool exists(bthread_id_t id)
-    { return bthread::id_exists_with_true_negatives(id); }
+    { return fast::id_exists_with_true_negatives(id); }
 };
 const bthread_id_t IdTraits::ID_INIT = INVALID_BTHREAD_ID;
 
@@ -317,7 +316,7 @@ size_t get_sizes(const bthread_id_list_t* list, size_t* cnt, size_t n) {
     if (list->impl == NULL) {
         return 0;
     }
-    return static_cast<bthread::IdList*>(list->impl)->get_sizes(cnt, n);
+    return static_cast<fast::IdList*>(list->impl)->get_sizes(cnt, n);
 }
 
 const int ID_MAX_RANGE = 1024;
@@ -381,34 +380,34 @@ static int id_create_ranged_impl(
     return ENOMEM;
 }
 
-}  // namespace bthread
+}  // namespace fast
 
 extern "C" {
 
 int bthread_id_create(
     bthread_id_t* id, void* data,
     int (*on_error)(bthread_id_t, void*, int)) {
-    return bthread::id_create_impl(
+    return fast::id_create_impl(
         id, data,
-        (on_error ? on_error : bthread::default_bthread_id_on_error), NULL);
+        (on_error ? on_error : fast::default_bthread_id_on_error), NULL);
 }
 
 int bthread_id_create_ranged(bthread_id_t* id, void* data,
                              int (*on_error)(bthread_id_t, void*, int),
                              int range) {
-    return bthread::id_create_ranged_impl(
+    return fast::id_create_ranged_impl(
         id, data, 
-        (on_error ? on_error : bthread::default_bthread_id_on_error),
+        (on_error ? on_error : fast::default_bthread_id_on_error),
         NULL, range);
 }
 
 int bthread_id_lock_and_reset_range_verbose(
     bthread_id_t id, void **pdata, int range, const char *location) {
-    bthread::Id* const meta = address_resource(bthread::get_slot(id));
+    fast::Id* const meta = address_resource(fast::get_slot(id));
     if (!meta) {
         return EINVAL;
     }
-    const uint32_t id_ver = bthread::get_version(id);
+    const uint32_t id_ver = fast::get_version(id);
     uint32_t* butex = meta->butex;
     bool ever_contended = false;
     meta->mutex.lock();
@@ -419,12 +418,12 @@ int bthread_id_lock_and_reset_range_verbose(
             if (range == 0) {
                 // fast path
             } else if (range < 0 ||
-                       range > bthread::ID_MAX_RANGE ||
+                       range > fast::ID_MAX_RANGE ||
                        range + meta->first_ver <= meta->locked_ver) {
                 LOG_IF(FATAL, range < 0) << "range must be positive, actually "
                                          << range;
-                LOG_IF(FATAL, range > bthread::ID_MAX_RANGE)
-                    << "max range is " << bthread::ID_MAX_RANGE
+                LOG_IF(FATAL, range > fast::ID_MAX_RANGE)
+                    << "max range is " << fast::ID_MAX_RANGE
                     << ", actually " << range;
             } else {
                 meta->locked_ver = meta->first_ver + range;
@@ -440,7 +439,7 @@ int bthread_id_lock_and_reset_range_verbose(
             uint32_t expected_ver = *butex;
             meta->mutex.unlock();
             ever_contended = true;
-            if (bthread::butex_wait(butex, expected_ver, NULL) < 0 &&
+            if (fast::butex_wait(butex, expected_ver, NULL) < 0 &&
                 errno != EWOULDBLOCK && errno != EINTR) {
                 return errno;
             }
@@ -460,11 +459,11 @@ int bthread_id_error_verbose(bthread_id_t id, int error_code,
 }
 
 int bthread_id_about_to_destroy(bthread_id_t id) {
-    bthread::Id* const meta = address_resource(bthread::get_slot(id));
+    fast::Id* const meta = address_resource(fast::get_slot(id));
     if (!meta) {
         return EINVAL;
     }
-    const uint32_t id_ver = bthread::get_version(id);
+    const uint32_t id_ver = fast::get_version(id);
     uint32_t* butex = meta->butex;
     meta->mutex.lock();
     if (!meta->has_version(id_ver)) {
@@ -481,18 +480,18 @@ int bthread_id_about_to_destroy(bthread_id_t id) {
     meta->mutex.unlock();
     if (contended) {
         // wake up all waiting lockers.
-        bthread::butex_wake_except(butex, 0);
+        fast::butex_wake_except(butex, 0);
     }
     return 0;
 }
 
 int bthread_id_cancel(bthread_id_t id) {
-    bthread::Id* const meta = address_resource(bthread::get_slot(id));
+    fast::Id* const meta = address_resource(fast::get_slot(id));
     if (!meta) {
         return EINVAL;
     }
     uint32_t* butex = meta->butex;
-    const uint32_t id_ver = bthread::get_version(id);
+    const uint32_t id_ver = fast::get_version(id);
     meta->mutex.lock();
     if (!meta->has_version(id_ver)) {
         meta->mutex.unlock();
@@ -506,18 +505,18 @@ int bthread_id_cancel(bthread_id_t id) {
     meta->first_ver = *butex;
     meta->locked_ver = *butex;
     meta->mutex.unlock();
-    return_resource(bthread::get_slot(id));
+    return_resource(fast::get_slot(id));
     return 0;
 }
 
 int bthread_id_join(bthread_id_t id) {
-    const bthread::IdResourceId slot = bthread::get_slot(id);
-    bthread::Id* const meta = address_resource(slot);
+    const fast::IdResourceId slot = fast::get_slot(id);
+    fast::Id* const meta = address_resource(slot);
     if (!meta) {
         // The id is not created yet, this join is definitely wrong.
         return EINVAL;
     }
-    const uint32_t id_ver = bthread::get_version(id);
+    const uint32_t id_ver = fast::get_version(id);
     uint32_t* join_butex = meta->join_butex;
     while (1) {
         meta->mutex.lock();
@@ -527,7 +526,7 @@ int bthread_id_join(bthread_id_t id) {
         if (!has_ver) {
             break;
         }
-        if (bthread::butex_wait(join_butex, expected_ver, NULL) < 0 &&
+        if (fast::butex_wait(join_butex, expected_ver, NULL) < 0 &&
             errno != EWOULDBLOCK && errno != EINTR) {
             return errno;
         }
@@ -536,12 +535,12 @@ int bthread_id_join(bthread_id_t id) {
 }
 
 int bthread_id_trylock(bthread_id_t id, void** pdata) {
-    bthread::Id* const meta = address_resource(bthread::get_slot(id));
+    fast::Id* const meta = address_resource(fast::get_slot(id));
     if (!meta) {
         return EINVAL;
     }
     uint32_t* butex = meta->butex;
-    const uint32_t id_ver = bthread::get_version(id);
+    const uint32_t id_ver = fast::get_version(id);
     meta->mutex.lock();
     if (!meta->has_version(id_ver)) {
         meta->mutex.unlock();
@@ -565,14 +564,14 @@ int bthread_id_lock_verbose(bthread_id_t id, void** pdata,
 }
 
 int bthread_id_unlock(bthread_id_t id) {
-    bthread::Id* const meta = address_resource(bthread::get_slot(id));
+    fast::Id* const meta = address_resource(fast::get_slot(id));
     if (!meta) {
         return EINVAL;
     }
     uint32_t* butex = meta->butex;
     // Release fence makes sure all changes made before signal visible to
     // woken-up waiters.
-    const uint32_t id_ver = bthread::get_version(id);
+    const uint32_t id_ver = fast::get_version(id);
     meta->mutex.lock();
     if (!meta->has_version(id_ver)) {
         meta->mutex.unlock();
@@ -584,7 +583,7 @@ int bthread_id_unlock(bthread_id_t id) {
         LOG(FATAL) << "bthread_id=" << id.value << " is not locked!";
         return EPERM;
     }
-    bthread::PendingError front;
+    fast::PendingError front;
     if (meta->pending_q.pop(&front)) {
         meta->lock_location = front.location;
         meta->mutex.unlock();
@@ -600,20 +599,20 @@ int bthread_id_unlock(bthread_id_t id) {
         meta->mutex.unlock();
         if (contended) {
             // We may wake up already-reused id, but that's OK.
-            bthread::butex_wake(butex);
+            fast::butex_wake(butex);
         }
         return 0; 
     }
 }
 
 int bthread_id_unlock_and_destroy(bthread_id_t id) {
-    bthread::Id* const meta = address_resource(bthread::get_slot(id));
+    fast::Id* const meta = address_resource(fast::get_slot(id));
     if (!meta) {
         return EINVAL;
     }
     uint32_t* butex = meta->butex;
     uint32_t* join_butex = meta->join_butex;
-    const uint32_t id_ver = bthread::get_version(id);
+    const uint32_t id_ver = fast::get_version(id);
     meta->mutex.lock();
     if (!meta->has_version(id_ver)) {
         meta->mutex.unlock();
@@ -633,9 +632,9 @@ int bthread_id_unlock_and_destroy(bthread_id_t id) {
     meta->pending_q.clear();
     meta->mutex.unlock();
     // Notice that butex_wake* returns # of woken-up, not successful or not.
-    bthread::butex_wake_except(butex, 0);
-    bthread::butex_wake_all(join_butex);
-    return_resource(bthread::get_slot(id));
+    fast::butex_wake_except(butex, 0);
+    fast::butex_wake_all(join_butex);
+    return_resource(fast::get_slot(id));
     return 0;
 }
 
@@ -652,18 +651,18 @@ int bthread_id_list_init(bthread_id_list_t* list,
 }
 
 void bthread_id_list_destroy(bthread_id_list_t* list) {
-    delete static_cast<bthread::IdList*>(list->impl);
+    delete static_cast<fast::IdList*>(list->impl);
     list->impl = NULL;
 }
 
 int bthread_id_list_add(bthread_id_list_t* list, bthread_id_t id) {
     if (list->impl == NULL) {
-        list->impl = new (std::nothrow) bthread::IdList;
+        list->impl = new (std::nothrow) fast::IdList;
         if (NULL == list->impl) {
             return ENOMEM;
         }
     }
-    return static_cast<bthread::IdList*>(list->impl)->add(id);
+    return static_cast<fast::IdList*>(list->impl)->add(id);
 }
 
 int bthread_id_list_reset(bthread_id_list_t* list, int error_code) {
@@ -692,28 +691,28 @@ int bthread_id_list_reset_bthreadsafe(bthread_id_list_t* list, int error_code,
 int bthread_id_create2(
     bthread_id_t* id, void* data,
     int (*on_error)(bthread_id_t, void*, int, const std::string&)) {
-    return bthread::id_create_impl(
+    return fast::id_create_impl(
         id, data, NULL,
-        (on_error ? on_error : bthread::default_bthread_id_on_error2));
+        (on_error ? on_error : fast::default_bthread_id_on_error2));
 }
 
 int bthread_id_create2_ranged(
     bthread_id_t* id, void* data,
     int (*on_error)(bthread_id_t, void*, int, const std::string&),
     int range) {
-    return bthread::id_create_ranged_impl(
+    return fast::id_create_ranged_impl(
         id, data, NULL,
-        (on_error ? on_error : bthread::default_bthread_id_on_error2), range);
+        (on_error ? on_error : fast::default_bthread_id_on_error2), range);
 }
 
 int bthread_id_error2_verbose(bthread_id_t id, int error_code,
                               const std::string& error_text,
                               const char *location) {
-    bthread::Id* const meta = address_resource(bthread::get_slot(id));
+    fast::Id* const meta = address_resource(fast::get_slot(id));
     if (!meta) {
         return EINVAL;
     }
-    const uint32_t id_ver = bthread::get_version(id);
+    const uint32_t id_ver = fast::get_version(id);
     uint32_t* butex = meta->butex;
     meta->mutex.lock();
     if (!meta->has_version(id_ver)) {
@@ -730,7 +729,7 @@ int bthread_id_error2_verbose(bthread_id_t id, int error_code,
             return meta->on_error2(id, meta->data, error_code, error_text);
         }
     } else {
-        bthread::PendingError e;
+        fast::PendingError e;
         e.id = id;
         e.error_code = error_code;
         e.error_text = error_text;
@@ -745,8 +744,8 @@ int bthread_id_list_reset2(bthread_id_list_t* list,
                            int error_code,
                            const std::string& error_text) {
     if (list->impl != NULL) {
-        static_cast<bthread::IdList*>(list->impl)->apply(
-            bthread::IdResetter(error_code, error_text));
+        static_cast<fast::IdList*>(list->impl)->apply(
+            fast::IdResetter(error_code, error_text));
     }
     return 0;
 }

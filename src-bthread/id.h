@@ -23,7 +23,7 @@
 #define BTHREAD_ID_H
 
 #include "butil/macros.h"              // BAIDU_SYMBOLSTR
-#include "bthread/types.h"
+#include "types.h"
 
 __BEGIN_DECLS
 

@@ -19,7 +19,7 @@
 
 // Date: Wed Jul 30 11:47:19 CST 2014
 
-#include "bthread/errno.h"
+#include "errno.h"
 
 // Define errno in bthread/errno.h
 extern const int ESTOP = -20;

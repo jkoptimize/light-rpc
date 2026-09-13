@@ -19,7 +19,7 @@
 
 // Date: Wed Mar 14 17:44:58 CST 2018
 
-#include "bthread/sys_futex.h"
+#include "sys_futex.h"
 #include "butil/scoped_lock.h"
 #include "butil/atomicops.h"
 #include <pthread.h>
@@ -27,7 +27,7 @@
 
 #if defined(OS_MACOSX)
 
-namespace bthread {
+namespace fast {
 
 class SimuFutex {
 public:
@@ -140,6 +140,6 @@ int futex_wake_private(void* addr1, int nwake) {
     return nwakedup;
 }
 
-} // namespace bthread
+} // namespace fast
 
 #endif

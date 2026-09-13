@@ -25,7 +25,6 @@
 #include <stdint.h>                            // uint64_t
 #include "butil/macros.h"
 #if defined(__cplusplus)
-#include "butil/logging.h"                      // CHECK
 #endif
 
 typedef uint64_t bthread_t;
@@ -249,13 +248,13 @@ typedef struct {
 
 #if defined(__cplusplus)
 class bthread_once_t;
-namespace bthread {
+namespace fast {
 extern int bthread_once_impl(bthread_once_t* once_control, void (*init_routine)());
 }
 
 class bthread_once_t {
 public:
-friend int bthread::bthread_once_impl(bthread_once_t* once_control, void (*init_routine)());
+friend int fast::bthread_once_impl(bthread_once_t* once_control, void (*init_routine)());
     enum State {
         UNINITIALIZED = 0,
         INPROGRESS,

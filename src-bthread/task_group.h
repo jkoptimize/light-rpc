@@ -23,15 +23,15 @@
 #define BTHREAD_TASK_GROUP_H
 
 #include "butil/time.h"                             // cpuwide_time_ns
-#include "bthread/task_control.h"
-#include "bthread/task_meta.h"                     // bthread_t, TaskMeta
-#include "bthread/work_stealing_queue.h"           // WorkStealingQueue
-#include "bthread/remote_task_queue.h"             // RemoteTaskQueue
+#include "task_control.h"
+#include "task_meta.h"                     // bthread_t, TaskMeta
+#include "work_stealing_queue.h"           // WorkStealingQueue
+#include "remote_task_queue.h"             // RemoteTaskQueue
 #include "butil/resource_pool.h"                    // ResourceId
-#include "bthread/parking_lot.h"
-#include "bthread/prime_offset.h"
+#include "parking_lot.h"
+#include "prime_offset.h"
 
-namespace bthread {
+namespace fast {
 
 // For exiting a bthread.
 class ExitException : public std::exception {
@@ -381,7 +381,7 @@ friend class TaskControl;
     pthread_t _tid{};
 };
 
-}  // namespace bthread
+}  // namespace fast
 
 #include "task_group_inl.h"
 

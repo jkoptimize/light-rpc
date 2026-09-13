@@ -24,9 +24,8 @@
 
 #include "butil/macros.h"
 #include "butil/atomicops.h"
-#include "butil/logging.h"
 
-namespace bthread {
+namespace fast {
 
 template <typename T>
 class WorkStealingQueue {
@@ -152,6 +151,6 @@ private:
     BAIDU_CACHELINE_ALIGNMENT butil::atomic<size_t> _top;
 };
 
-}  // namespace bthread
+}  // namespace fast
 
 #endif  // BTHREAD_WORK_STEALING_QUEUE_H

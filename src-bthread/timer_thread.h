@@ -25,9 +25,9 @@
 #include <pthread.h>                  // pthread_*
 #include "butil/atomicops.h" 
 #include "butil/time.h"                // time utilities
-#include "bthread/mutex.h"
+#include "mutex.h"
 
-namespace bthread {
+namespace fast {
 
 struct TimerThreadOptions {
     // Scheduling requests are hashed into different bucket to improve
@@ -107,6 +107,6 @@ private:
 TimerThread* get_or_create_global_timer_thread();
 TimerThread* get_global_timer_thread();
 
-}   // end namespace bthread
+}   // end namespace fast
 
 #endif  // BTHREAD_TIMER_THREAD_H

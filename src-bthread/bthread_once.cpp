@@ -15,19 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include "bthread/types.h"
-#include "bthread/butex.h"
+#include "types.h"
+#include "butex.h"
 
 bthread_once_t::bthread_once_t()
-    : _butex(bthread::butex_create_checked<butil::atomic<int>>())  {
+    : _butex(fast::butex_create_checked<butil::atomic<int>>())  {
     _butex->store(UNINITIALIZED, butil::memory_order_relaxed);
 }
 
 bthread_once_t::~bthread_once_t() {
-    bthread::butex_destroy(_butex);
+    fast::butex_destroy(_butex);
 }
 
-namespace bthread {
+namespace fast {
 
 int bthread_once_impl(bthread_once_t* once_control, void (*init_routine)()) {
     butil::atomic<int>* butex = once_control->_butex;
@@ -50,7 +50,7 @@ int bthread_once_impl(bthread_once_t* once_control, void (*init_routine)()) {
         // (b)threads that want to use the initialized data.
         butex->store(bthread_once_t::INITIALIZED, butil::memory_order_release);
         // Wake up all other (b)threads.
-        bthread::butex_wake_all(butex);
+        fast::butex_wake_all(butex);
         return 0;
     }
 
@@ -63,19 +63,19 @@ int bthread_once_impl(bthread_once_t* once_control, void (*init_routine)()) {
         }
         // Unless your constructor can be very time consuming, it is very unlikely o hit
         // this race. When it does, we just wait the thread until the object has been created.
-        if (bthread::butex_wait(butex, val, NULL) < 0 &&
+        if (fast::butex_wait(butex, val, NULL) < 0 &&
             errno != EWOULDBLOCK && errno != EINTR/*note*/) {
             return errno;
         }
     }
 }
 
-} // namespace bthread
+} // namespace fast
 
 __BEGIN_DECLS
 
 int bthread_once(bthread_once_t* once_control, void (*init_routine)()) {
-    return bthread::bthread_once_impl(once_control, init_routine);
+    return fast::bthread_once_impl(once_control, init_routine);
 }
 
 __END_DECLS

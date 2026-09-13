@@ -22,7 +22,7 @@
 #ifndef  BTHREAD_MUTEX_H
 #define  BTHREAD_MUTEX_H
 
-#include "bthread/types.h"
+#include "types.h"
 #include "butil/scoped_lock.h"
 #include "bvar/utils/lock_timer.h"
 
@@ -38,7 +38,7 @@ extern int bthread_mutex_unlock(bthread_mutex_t* mutex);
 extern bthread_t bthread_self(void);
 __END_DECLS
 
-namespace bthread {
+namespace fast {
 
 // The C++ Wrapper of bthread_mutex
 
@@ -114,7 +114,7 @@ private:
     internal::FastPthreadMutex _mutex;
 };
 
-}  // namespace bthread
+}  // namespace fast
 
 // Specialize std::lock_guard and std::unique_lock for bthread_mutex_t
 

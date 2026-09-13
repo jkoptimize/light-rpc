@@ -21,16 +21,15 @@
 #include <queue>                           // heap functions
 #include <gflags/gflags.h>
 #include "butil/scoped_lock.h"
-#include "butil/logging.h"
 #include "butil/third_party/murmurhash3/murmurhash3.h"   // fmix64
 #include "butil/resource_pool.h"
 #include "butil/threading/platform_thread.h"
 #include "bvar/bvar.h"
-#include "bthread/sys_futex.h"
-#include "bthread/timer_thread.h"
-#include "bthread/log.h"
+#include "sys_futex.h"
+#include "timer_thread.h"
+#include "log.h"
 
-namespace bthread {
+namespace fast {
 
 DEFINE_uint32(brpc_timer_num_buckets, 13, "brpc timer num buckets");
 
@@ -489,4 +488,4 @@ TimerThread* get_global_timer_thread() {
     return g_timer_thread;
 }
 
-}  // end namespace bthread
+}  // end namespace fast

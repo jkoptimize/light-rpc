@@ -22,7 +22,7 @@
 #ifndef BTHREAD_TASK_GROUP_INL_H
 #define BTHREAD_TASK_GROUP_INL_H
 
-namespace bthread {
+namespace fast {
 
 // Utilities to manipulate bthread_t
 inline bthread_t make_tid(uint32_t version, butil::ResourceId<TaskMeta> slot) {
@@ -108,6 +108,6 @@ inline void TaskGroup::flush_nosignal_tasks_remote() {
     }
 }
 
-}  // namespace bthread
+}  // namespace fast
 
 #endif  // BTHREAD_TASK_GROUP_INL_H

@@ -21,11 +21,11 @@
 #include "butil/fast_rand.h"
 #include "butil/macros.h"
 
-namespace bthread {
+namespace fast {
 // Prime number offset for hash function.
 inline size_t prime_offset(size_t seed) {
     uint32_t offsets[] = {
-        #include "bthread/offset_inl.list"
+        #include "offset_inl.list"
     };
     return offsets[seed % ARRAY_SIZE(offsets)];
 }

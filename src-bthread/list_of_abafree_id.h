@@ -27,7 +27,7 @@
 #include <cstdint>
 #include "butil/macros.h"
 
-namespace bthread {
+namespace fast {
 
 // A container for storing identifiers that may be invalidated.
 
@@ -345,6 +345,6 @@ size_t ListOfABAFreeId<Id, IdTraits>::get_sizes(size_t* cnts, size_t n) {
     return 1;
 }
 
-} // namespace bthread
+} // namespace fast
 
 #endif // BTHREAD_LIST_OF_ABAFREE_ID_H

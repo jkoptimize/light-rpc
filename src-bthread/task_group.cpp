@@ -22,21 +22,18 @@
 #include <sys/types.h>
 #include <stddef.h>                         // size_t
 #include <gflags/gflags.h>
-#include "butil/compat.h"                   // OS_MACOSX
 #include "butil/macros.h"                   // ARRAY_SIZE
 #include "butil/scoped_lock.h"              // BAIDU_SCOPED_LOCK
 #include "butil/fast_rand.h"
-#include "butil/unique_ptr.h"
 #include "butil/third_party/murmurhash3/murmurhash3.h" // fmix64
-#include "butil/reloadable_flags.h"
-#include "bthread/errno.h"                  // ESTOP
-#include "bthread/butex.h"                  // butex_*
-#include "bthread/sys_futex.h"              // futex_wake_private
-#include "bthread/processor.h"              // cpu_relax
-#include "bthread/task_control.h"
-#include "bthread/task_group.h"
-#include "bthread/timer_thread.h"
-#include "bthread/bthread.h"
+#include "errno.h"                  // ESTOP
+#include "butex.h"                  // butex_*
+#include "sys_futex.h"              // futex_wake_private
+#include "processor.h"              // cpu_relax
+#include "task_control.h"
+#include "task_group.h"
+#include "timer_thread.h"
+#include "bthread.h"
 
 #ifdef __x86_64__
 #include <x86intrin.h>
@@ -46,7 +43,7 @@
 #include <arm_neon.h>
 #endif // __ARM_NEON
 
-namespace bthread {
+namespace fast {
 
 static const bthread_attr_t BTHREAD_ATTR_TASKGROUP = {
     BTHREAD_STACKTYPE_UNKNOWN, 0, NULL, BTHREAD_TAG_INVALID, {0} };
@@ -1165,4 +1162,4 @@ void print_task(std::ostream& os, bthread_t tid, bool enable_trace,
     }
 }
 
-}  // namespace bthread
+}  // namespace fast

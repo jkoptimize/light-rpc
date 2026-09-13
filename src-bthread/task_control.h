@@ -32,13 +32,13 @@
 #include <memory>
 #include "butil/atomicops.h"                     // butil::atomic
 #include "bvar/bvar.h"                          // bvar::PassiveStatus
-#include "bthread/task_tracer.h"
-#include "bthread/task_meta.h"                  // TaskMeta
-#include "bthread/work_stealing_queue.h"        // WorkStealingQueue
-#include "bthread/parking_lot.h"
+#include "task_tracer.h"
+#include "task_meta.h"                  // TaskMeta
+#include "work_stealing_queue.h"        // WorkStealingQueue
+#include "parking_lot.h"
 
 DECLARE_int32(task_group_ntags);
-namespace bthread {
+namespace fast {
 
 class TaskGroup;
 
@@ -205,6 +205,6 @@ inline void TaskControl::for_each_task_group(F const& f) {
     }
 }
 
-}  // namespace bthread
+}  // namespace fast
 
 #endif  // BTHREAD_TASK_CONTROL_H

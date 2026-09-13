@@ -29,7 +29,7 @@
 #include <syscall.h>                    // SYS_futex
 #include <linux/futex.h>                // FUTEX_WAIT, FUTEX_WAKE
 
-namespace bthread {
+namespace fast {
 
 #ifndef FUTEX_PRIVATE_FLAG
 #define FUTEX_PRIVATE_FLAG 128
@@ -51,11 +51,11 @@ inline int futex_requeue_private(void* addr1, int nwake, void* addr2) {
                    nwake, NULL, addr2, 0);
 }
 
-}  // namespace bthread
+}  // namespace fast
 
 #elif defined(OS_MACOSX)
 
-namespace bthread {
+namespace fast {
 
 int futex_wait_private(void* addr1, int expected, const timespec* timeout);
 
@@ -63,7 +63,7 @@ int futex_wake_private(void* addr1, int nwake);
 
 int futex_requeue_private(void* addr1, int nwake, void* addr2);
 
-}  // namespace bthread
+}  // namespace fast
 
 #else
 #error "Unsupported OS"

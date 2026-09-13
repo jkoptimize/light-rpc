@@ -23,7 +23,7 @@
 #define BTHREAD_ERRNO_H
 
 #include <errno.h>                    // errno
-#include "butil/errno.h"               // berror(), DEFINE_BTHREAD_ERRNO
+#include <cstring>
 
 __BEGIN_DECLS
 

@@ -21,10 +21,10 @@
 
 #include "butil/atomicops.h"
 #include "butil/macros.h"                         // BAIDU_CASSERT
-#include "bthread/butex.h"                       // butex_*
-#include "bthread/types.h"                       // bthread_cond_t
+#include "butex.h"                       // butex_*
+#include "types.h"                       // bthread_cond_t
 
-namespace bthread {
+namespace fast {
 struct CondInternal {
     butil::atomic<bthread_mutex_t*> m;
     butil::atomic<int>* seq;
@@ -47,30 +47,30 @@ extern int bthread_mutex_lock_contended(bthread_mutex_t*);
 int bthread_cond_init(bthread_cond_t* __restrict c,
                       const bthread_condattr_t*) {
     c->m = NULL;
-    c->seq = bthread::butex_create_checked<int>();
+    c->seq = fast::butex_create_checked<int>();
     *c->seq = 0;
     return 0;
 }
 
 int bthread_cond_destroy(bthread_cond_t* c) {
-    bthread::butex_destroy(c->seq);
+    fast::butex_destroy(c->seq);
     c->seq = NULL;
     return 0;
 }
 
 int bthread_cond_signal(bthread_cond_t* c) {
-    bthread::CondInternal* ic = reinterpret_cast<bthread::CondInternal*>(c);
+    fast::CondInternal* ic = reinterpret_cast<fast::CondInternal*>(c);
     // ic is probably dereferenced after fetch_add, save required fields before
     // this point
     butil::atomic<int>* const saved_seq = ic->seq;
     saved_seq->fetch_add(1, butil::memory_order_release);
     // don't touch ic any more
-    bthread::butex_wake(saved_seq);
+    fast::butex_wake(saved_seq);
     return 0;
 }
 
 int bthread_cond_broadcast(bthread_cond_t* c) {
-    bthread::CondInternal* ic = reinterpret_cast<bthread::CondInternal*>(c);
+    fast::CondInternal* ic = reinterpret_cast<fast::CondInternal*>(c);
     bthread_mutex_t* m = ic->m.load(butil::memory_order_relaxed);
     butil::atomic<int>* const saved_seq = ic->seq;
     if (!m) {
@@ -79,13 +79,13 @@ int bthread_cond_broadcast(bthread_cond_t* c) {
     void* const saved_butex = m->butex;
     // Wakeup one thread and requeue the rest on the mutex.
     ic->seq->fetch_add(1, butil::memory_order_release);
-    bthread::butex_requeue(saved_seq, saved_butex);
+    fast::butex_requeue(saved_seq, saved_butex);
     return 0;
 }
 
 int bthread_cond_wait(bthread_cond_t* __restrict c,
                       bthread_mutex_t* __restrict m) {
-    bthread::CondInternal* ic = reinterpret_cast<bthread::CondInternal*>(c);
+    fast::CondInternal* ic = reinterpret_cast<fast::CondInternal*>(c);
     const int expected_seq = ic->seq->load(butil::memory_order_relaxed);
     if (ic->m.load(butil::memory_order_relaxed) != m) {
         // bind m to c
@@ -97,7 +97,7 @@ int bthread_cond_wait(bthread_cond_t* __restrict c,
     }
     bthread_mutex_unlock(m);
     int rc1 = 0;
-    if (bthread::butex_wait(ic->seq, expected_seq, NULL) < 0 &&
+    if (fast::butex_wait(ic->seq, expected_seq, NULL) < 0 &&
         errno != EWOULDBLOCK && errno != EINTR/*note*/) {
         // EINTR should not be returned by cond_*wait according to docs on
         // pthread, however spurious wake-up is OK, just as we do here
@@ -119,7 +119,7 @@ int bthread_cond_wait(bthread_cond_t* __restrict c,
 int bthread_cond_timedwait(bthread_cond_t* __restrict c,
                            bthread_mutex_t* __restrict m,
                            const struct timespec* __restrict abstime) {
-    bthread::CondInternal* ic = reinterpret_cast<bthread::CondInternal*>(c);
+    fast::CondInternal* ic = reinterpret_cast<fast::CondInternal*>(c);
     const int expected_seq = ic->seq->load(butil::memory_order_relaxed);
     if (ic->m.load(butil::memory_order_relaxed) != m) {
         // bind m to c
@@ -131,7 +131,7 @@ int bthread_cond_timedwait(bthread_cond_t* __restrict c,
     }
     bthread_mutex_unlock(m);
     int rc1 = 0;
-    if (bthread::butex_wait(ic->seq, expected_seq, abstime) < 0 &&
+    if (fast::butex_wait(ic->seq, expected_seq, abstime) < 0 &&
         errno != EWOULDBLOCK && errno != EINTR/*note*/) {
         // note: see comments in bthread_cond_wait on EINTR.
         rc1 = errno;

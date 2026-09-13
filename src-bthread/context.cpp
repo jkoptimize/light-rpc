@@ -13,7 +13,7 @@
             http://www.boost.org/LICENSE_1_0.txt)
 
 */
-#include "bthread/context.h"
+#include "context.h"
 #if defined(BTHREAD_CONTEXT_PLATFORM_windows_i386) && defined(BTHREAD_CONTEXT_COMPILER_gcc)
 __asm (
 ".text\n"

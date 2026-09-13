@@ -24,18 +24,18 @@
 
 #include <pthread.h>
 #include <sys/socket.h>
-#include "bthread/types.h"
-#include "bthread/errno.h"
+#include "types.h"
+#include "errno.h"
 
 #if defined(__cplusplus)
 #include <iostream>
-#include "bthread/mutex.h"        // use bthread_mutex_t in the RAII way
+#include "mutex.h"        // use bthread_mutex_t in the RAII way
 #endif // __cplusplus
 
-#include "bthread/id.h"
+#include "id.h"
 
 #if defined(__cplusplus) && defined(BRPC_BTHREAD_TRACER)
-namespace bthread {
+namespace fast {
 // Assign a TaskMeta to the pthread and set the state to Running,
 // so that `stack_trace()' can trace the call stack of the pthread.
 bthread_t init_for_pthread_stack_trace();
@@ -44,7 +44,7 @@ bthread_t init_for_pthread_stack_trace();
 // initialized by `init_for_pthread_stack_trace()'.
 void stack_trace(std::ostream& os, bthread_t tid);
 std::string stack_trace(bthread_t tid);
-} // namespace bthread
+} // namespace fast
 #endif // __cplusplus && BRPC_BTHREAD_TRACER
 
 __BEGIN_DECLS

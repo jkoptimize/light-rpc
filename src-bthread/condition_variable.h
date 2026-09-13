@@ -23,7 +23,7 @@
 #define  BTHREAD_CONDITION_VARIABLE_H
 
 #include "butil/time.h"
-#include "bthread/mutex.h"
+#include "mutex.h"
 
 __BEGIN_DECLS
 extern int bthread_cond_init(bthread_cond_t* __restrict cond,
@@ -39,7 +39,7 @@ extern int bthread_cond_timedwait(
     const struct timespec* __restrict abstime);
 __END_DECLS
 
-namespace bthread {
+namespace fast {
 
 class ConditionVariable {
     DISALLOW_COPY_AND_ASSIGN(ConditionVariable);
@@ -55,7 +55,7 @@ public:
 
     native_handler_type native_handler() { return &_cond; }
 
-    void wait(std::unique_lock<bthread::Mutex>& lock) {
+    void wait(std::unique_lock<fast::Mutex>& lock) {
         bthread_cond_wait(&_cond, lock.mutex()->native_handler());
     }
 
@@ -65,7 +65,7 @@ public:
 
     // Unlike std::condition_variable, we return ETIMEDOUT when time expires
     // rather than std::timeout
-    int wait_for(std::unique_lock<bthread::Mutex>& lock,
+    int wait_for(std::unique_lock<fast::Mutex>& lock,
                  long timeout_us) {
         return wait_until(lock, butil::microseconds_from_now(timeout_us));
     }
@@ -75,7 +75,7 @@ public:
         return wait_until(lock, butil::microseconds_from_now(timeout_us));
     }
 
-    int wait_until(std::unique_lock<bthread::Mutex>& lock,
+    int wait_until(std::unique_lock<fast::Mutex>& lock,
                    timespec duetime) {
         const int rc = bthread_cond_timedwait(
                 &_cond, lock.mutex()->native_handler(), &duetime);
@@ -101,6 +101,6 @@ private:
     bthread_cond_t                  _cond;
 };
 
-}  // namespace bthread
+}  // namespace fast
 
 #endif  //BTHREAD_CONDITION_VARIABLE_H

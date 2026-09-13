@@ -22,16 +22,14 @@
 #include <sys/syscall.h>
 #include <gflags/gflags.h>
 #include "butil/macros.h"                       // BAIDU_CASSERT
-#include "butil/logging.h"
 #include "butil/thread_local.h"
-#include "butil/reloadable_flags.h"
-#include "bthread/task_group.h"                // TaskGroup
-#include "bthread/task_control.h"              // TaskControl
-#include "bthread/timer_thread.h"
-#include "bthread/list_of_abafree_id.h"
-#include "bthread/bthread.h"
+#include "task_group.h"                // TaskGroup
+#include "task_control.h"              // TaskControl
+#include "timer_thread.h"
+#include "list_of_abafree_id.h"
+#include "bthread.h"
 
-namespace bthread {
+namespace fast {
 extern void print_task(std::ostream& os, bthread_t tid, bool enable_trace,
                        bool ignore_not_matched = false);
 
@@ -237,7 +235,7 @@ static bool validate_bthread_min_concurrency(const char*, int32_t val) {
     BAIDU_SCOPED_LOCK(g_task_control_mutex);
     int concurrency = c->concurrency();
     if (val > concurrency) {
-        int added = bthread::add_workers_for_each_tag(val - concurrency);
+        int added = fast::add_workers_for_each_tag(val - concurrency);
         return added == (val - concurrency);
     } else {
         return true;
@@ -250,7 +248,7 @@ static bool validate_bthread_current_tag(const char*, int32_t val) {
     } else if (val < BTHREAD_TAG_DEFAULT || val >= FLAGS_task_group_ntags) {
         return false;
     }
-    BAIDU_SCOPED_LOCK(bthread::g_task_control_mutex);
+    BAIDU_SCOPED_LOCK(fast::g_task_control_mutex);
     auto c = get_task_control();
     if (c == NULL) {
         FLAGS_bthread_concurrency_by_tag = 8 + BTHREAD_EPOLL_THREAD_NUM;
@@ -299,7 +297,7 @@ start_from_non_worker(bthread_t* __restrict tid,
 // tag equal to thread local
 // tag equal to BTHREAD_TAG_INVALID
 BUTIL_FORCE_INLINE bool can_run_thread_local(const bthread_attr_t* __restrict attr) {
-    return attr == nullptr || attr->tag == bthread::tls_task_group->tag() ||
+    return attr == nullptr || attr->tag == fast::tls_task_group->tag() ||
            attr->tag == BTHREAD_TAG_INVALID;
 }
 
@@ -308,7 +306,7 @@ struct TidTraits {
     static const size_t MAX_ENTRIES = 65536;
     static const size_t INIT_GC_SIZE = 65536;
     static const bthread_t ID_INIT;
-    static bool exists(bthread_t id) { return bthread::TaskGroup::exists(id); }
+    static bool exists(bthread_t id) { return fast::TaskGroup::exists(id); }
 };
 const bthread_t TidTraits::ID_INIT = INVALID_BTHREAD;
 
@@ -324,7 +322,7 @@ struct TidJoiner {
     }
 };
 
-}  // namespace bthread
+}  // namespace fast
 
 extern "C" {
 
@@ -332,58 +330,58 @@ int bthread_start_urgent(bthread_t* __restrict tid,
                          const bthread_attr_t* __restrict attr,
                          void * (*fn)(void*),
                          void* __restrict arg) {
-    bthread::TaskGroup* g = bthread::tls_task_group;
+    fast::TaskGroup* g = fast::tls_task_group;
     if (g) {
         // if attribute is null use thread local task group
-        if (bthread::can_run_thread_local(attr)) {
-            return bthread::TaskGroup::start_foreground(&g, tid, attr, fn, arg);
+        if (fast::can_run_thread_local(attr)) {
+            return fast::TaskGroup::start_foreground(&g, tid, attr, fn, arg);
         }
     }
-    return bthread::start_from_non_worker(tid, attr, fn, arg);
+    return fast::start_from_non_worker(tid, attr, fn, arg);
 }
 
 int bthread_start_background(bthread_t* __restrict tid,
                              const bthread_attr_t* __restrict attr,
                              void * (*fn)(void*),
                              void* __restrict arg) {
-    bthread::TaskGroup* g = bthread::tls_task_group;
+    fast::TaskGroup* g = fast::tls_task_group;
     if (g) {
         // if attribute is null use thread local task group
-        if (bthread::can_run_thread_local(attr)) {
+        if (fast::can_run_thread_local(attr)) {
             return g->start_background<false>(tid, attr, fn, arg);
         }
     }
-    return bthread::start_from_non_worker(tid, attr, fn, arg);
+    return fast::start_from_non_worker(tid, attr, fn, arg);
 }
 
 void bthread_flush() {
-    bthread::TaskGroup* g = bthread::tls_task_group;
+    fast::TaskGroup* g = fast::tls_task_group;
     if (g) {
         return g->flush_nosignal_tasks();
     }
-    g = bthread::tls_task_group_nosignal;
+    g = fast::tls_task_group_nosignal;
     if (g) {
         // NOSIGNAL tasks were created in this non-worker.
-        bthread::tls_task_group_nosignal = NULL;
+        fast::tls_task_group_nosignal = NULL;
         return g->flush_nosignal_tasks_remote();
     }
 }
 
 int bthread_interrupt(bthread_t tid, bthread_tag_t tag) {
-    return bthread::TaskGroup::interrupt(tid, bthread::get_task_control(), tag);
+    return fast::TaskGroup::interrupt(tid, fast::get_task_control(), tag);
 }
 
 int bthread_stop(bthread_t tid) {
-    bthread::TaskGroup::set_stopped(tid);
+    fast::TaskGroup::set_stopped(tid);
     return bthread_interrupt(tid);
 }
 
 int bthread_stopped(bthread_t tid) {
-    return (int)bthread::TaskGroup::is_stopped(tid);
+    return (int)fast::TaskGroup::is_stopped(tid);
 }
 
 bthread_t bthread_self(void) {
-    bthread::TaskGroup* g = bthread::tls_task_group;
+    fast::TaskGroup* g = fast::tls_task_group;
     // note: return 0 for main tasks now, which include main thread and
     // all work threads. So that we can identify main tasks from logs
     // more easily. This is probably questionable in the future.
@@ -405,16 +403,16 @@ int bthread_equal(bthread_t t1, bthread_t t2) {
 // False positive error reports may follow
 #endif // BUTIL_USE_ASAN
 void bthread_exit(void* retval) {
-    bthread::TaskGroup* g = bthread::tls_task_group;
+    fast::TaskGroup* g = fast::tls_task_group;
     if (g != NULL && !g->is_current_main_task()) {
-        throw bthread::ExitException(retval);
+        throw fast::ExitException(retval);
     } else {
         pthread_exit(retval);
     }
 }
 
 int bthread_join(bthread_t tid, void** thread_return) {
-    return bthread::TaskGroup::join(tid, thread_return);
+    return fast::TaskGroup::join(tid, thread_return);
 }
 
 int bthread_attr_init(bthread_attr_t* a) {
@@ -427,11 +425,11 @@ int bthread_attr_destroy(bthread_attr_t*) {
 }
 
 int bthread_getattr(bthread_t tid, bthread_attr_t* attr) {
-    return bthread::TaskGroup::get_attr(tid, attr);
+    return fast::TaskGroup::get_attr(tid, attr);
 }
 
 int bthread_getconcurrency(void) {
-    return bthread::FLAGS_bthread_concurrency;
+    return fast::FLAGS_bthread_concurrency;
 }
 
 int bthread_setconcurrency(int num) {
@@ -439,17 +437,17 @@ int bthread_setconcurrency(int num) {
         LOG(ERROR) << "Invalid concurrency=" << num;
         return EINVAL;
     }
-    if (bthread::FLAGS_bthread_min_concurrency > 0) {
-        if (num < bthread::FLAGS_bthread_min_concurrency) {
+    if (fast::FLAGS_bthread_min_concurrency > 0) {
+        if (num < fast::FLAGS_bthread_min_concurrency) {
             return EINVAL;
         }
-        if (bthread::never_set_bthread_concurrency) {
-            bthread::never_set_bthread_concurrency = false;
+        if (fast::never_set_bthread_concurrency) {
+            fast::never_set_bthread_concurrency = false;
         }
-        bthread::FLAGS_bthread_concurrency = num;
+        fast::FLAGS_bthread_concurrency = num;
         return 0;
     }
-    bthread::TaskControl* c = bthread::get_task_control();
+    fast::TaskControl* c = fast::get_task_control();
     if (c != NULL) {
         if (num < c->concurrency()) {
             return EPERM;
@@ -457,34 +455,34 @@ int bthread_setconcurrency(int num) {
             return 0;
         }
     }
-    BAIDU_SCOPED_LOCK(bthread::g_task_control_mutex);
-    c = bthread::get_task_control();
+    BAIDU_SCOPED_LOCK(fast::g_task_control_mutex);
+    c = fast::get_task_control();
     if (c == NULL) {
-        if (bthread::never_set_bthread_concurrency) {
-            bthread::never_set_bthread_concurrency = false;
-            bthread::FLAGS_bthread_concurrency = num;
-        } else if (num > bthread::FLAGS_bthread_concurrency) {
-            bthread::FLAGS_bthread_concurrency = num;
+        if (fast::never_set_bthread_concurrency) {
+            fast::never_set_bthread_concurrency = false;
+            fast::FLAGS_bthread_concurrency = num;
+        } else if (num > fast::FLAGS_bthread_concurrency) {
+            fast::FLAGS_bthread_concurrency = num;
         }
         return 0;
     }
-    if (bthread::FLAGS_bthread_concurrency != c->concurrency()) {
+    if (fast::FLAGS_bthread_concurrency != c->concurrency()) {
         LOG(ERROR) << "CHECK failed: bthread_concurrency="
-                   << bthread::FLAGS_bthread_concurrency
+                   << fast::FLAGS_bthread_concurrency
                    << " != tc_concurrency=" << c->concurrency();
-        bthread::FLAGS_bthread_concurrency = c->concurrency();
+        fast::FLAGS_bthread_concurrency = c->concurrency();
     }
-    if (num > bthread::FLAGS_bthread_concurrency) {
+    if (num > fast::FLAGS_bthread_concurrency) {
         // Create more workers if needed.
-        auto added = bthread::add_workers_for_each_tag(num - bthread::FLAGS_bthread_concurrency);
-        bthread::FLAGS_bthread_concurrency += added;
+        auto added = fast::add_workers_for_each_tag(num - fast::FLAGS_bthread_concurrency);
+        fast::FLAGS_bthread_concurrency += added;
     }
-    return (num == bthread::FLAGS_bthread_concurrency ? 0 : EPERM);
+    return (num == fast::FLAGS_bthread_concurrency ? 0 : EPERM);
 }
 
 int bthread_getconcurrency_by_tag(bthread_tag_t tag) {
-    BAIDU_SCOPED_LOCK(bthread::g_task_control_mutex);
-    auto c = bthread::get_task_control();
+    BAIDU_SCOPED_LOCK(fast::g_task_control_mutex);
+    auto c = fast::get_task_control();
     if (c == NULL) {
         return EPERM;
     }
@@ -501,14 +499,14 @@ int bthread_setconcurrency_by_tag(int num, bthread_tag_t tag) {
         LOG(ERROR) << "Invalid concurrency_by_tag=" << num;
         return EINVAL;
     }
-    auto c = bthread::get_or_new_task_control();
-    BAIDU_SCOPED_LOCK(bthread::g_task_control_mutex);
+    auto c = fast::get_or_new_task_control();
+    BAIDU_SCOPED_LOCK(fast::g_task_control_mutex);
     auto tag_ngroup = c->concurrency(tag);
     auto add = num - tag_ngroup;
 
     if (add >= 0) {
         auto added = c->add_workers(add, tag);
-        bthread::FLAGS_bthread_concurrency += added;
+        fast::FLAGS_bthread_concurrency += added;
         return (add == added ? 0 : EPERM);
     } else {
         LOG(WARNING) << "Fail to set concurrency by tag: " << tag
@@ -519,9 +517,9 @@ int bthread_setconcurrency_by_tag(int num, bthread_tag_t tag) {
 }
 
 int bthread_about_to_quit() {
-    bthread::TaskGroup* g = bthread::tls_task_group;
+    fast::TaskGroup* g = fast::tls_task_group;
     if (g != NULL) {
-        bthread::TaskMeta* current_task = g->current_task();
+        fast::TaskMeta* current_task = g->current_task();
         if(!(current_task->attr.flags & BTHREAD_NEVER_QUIT)) {
             current_task->about_to_quit = true;
         }
@@ -532,11 +530,11 @@ int bthread_about_to_quit() {
 
 int bthread_timer_add(bthread_timer_t* id, timespec abstime,
                       void (*on_timer)(void*), void* arg) {
-    bthread::TaskControl* c = bthread::get_or_new_task_control();
+    fast::TaskControl* c = fast::get_or_new_task_control();
     if (c == NULL) {
         return ENOMEM;
     }
-    bthread::TimerThread* tt = bthread::get_or_create_global_timer_thread();
+    fast::TimerThread* tt = fast::get_or_create_global_timer_thread();
     if (tt == NULL) {
         return ENOMEM;
     }
@@ -549,9 +547,9 @@ int bthread_timer_add(bthread_timer_t* id, timespec abstime,
 }
 
 int bthread_timer_del(bthread_timer_t id) {
-    bthread::TaskControl* c = bthread::get_task_control();
+    fast::TaskControl* c = fast::get_task_control();
     if (c != NULL) {
-        bthread::TimerThread* tt = bthread::get_global_timer_thread();
+        fast::TimerThread* tt = fast::get_global_timer_thread();
         if (tt == NULL) {
             return EINVAL;
         }
@@ -564,17 +562,17 @@ int bthread_timer_del(bthread_timer_t id) {
 }
 
 int bthread_usleep(uint64_t microseconds) {
-    bthread::TaskGroup* g = bthread::BAIDU_GET_VOLATILE_THREAD_LOCAL(tls_task_group);
+    fast::TaskGroup* g = fast::BAIDU_GET_VOLATILE_THREAD_LOCAL(tls_task_group);
     if (NULL != g && !g->is_current_pthread_task()) {
-        return bthread::TaskGroup::usleep(&g, microseconds);
+        return fast::TaskGroup::usleep(&g, microseconds);
     }
     return ::usleep(microseconds);
 }
 
 int bthread_yield(void) {
-    bthread::TaskGroup* g = bthread::BAIDU_GET_VOLATILE_THREAD_LOCAL(tls_task_group);
+    fast::TaskGroup* g = fast::BAIDU_GET_VOLATILE_THREAD_LOCAL(tls_task_group);
     if (NULL != g && !g->is_current_pthread_task()) {
-        bthread::TaskGroup::yield(&g);
+        fast::TaskGroup::yield(&g);
         return 0;
     }
     // pthread_yield is not available on MAC
@@ -585,7 +583,7 @@ int bthread_set_worker_startfn(void (*start_fn)()) {
     if (start_fn == NULL) {
         return EINVAL;
     }
-    bthread::g_worker_startfn = start_fn;
+    fast::g_worker_startfn = start_fn;
     return 0;
 }
 
@@ -593,7 +591,7 @@ int bthread_set_tagged_worker_startfn(void (*start_fn)(bthread_tag_t)) {
     if (start_fn == NULL) {
         return EINVAL;
     }
-    bthread::g_tagged_worker_startfn = start_fn;
+    fast::g_tagged_worker_startfn = start_fn;
     return 0;
 }
 
@@ -601,12 +599,12 @@ int bthread_set_create_span_func(void* (*func)()) {
     if (func == NULL) {
         return EINVAL;
     }
-    bthread::g_create_span_func = func;
+    fast::g_create_span_func = func;
     return 0;
 }
 
 void bthread_stop_world() {
-    bthread::TaskControl* c = bthread::get_task_control();
+    fast::TaskControl* c = fast::get_task_control();
     if (c != NULL) {
         c->stop_and_join();
     }
@@ -615,7 +613,7 @@ void bthread_stop_world() {
 int bthread_list_init(bthread_list_t* list,
                       unsigned /*size*/,
                       unsigned /*conflict_size*/) {
-    list->impl = new (std::nothrow) bthread::TidList;
+    list->impl = new (std::nothrow) fast::TidList;
     if (NULL == list->impl) {
         return ENOMEM;
     }
@@ -628,7 +626,7 @@ int bthread_list_init(bthread_list_t* list,
 }
 
 void bthread_list_destroy(bthread_list_t* list) {
-    delete static_cast<bthread::TidList*>(list->impl);
+    delete static_cast<fast::TidList*>(list->impl);
     list->impl = NULL;
 }
 
@@ -636,14 +634,14 @@ int bthread_list_add(bthread_list_t* list, bthread_t id) {
     if (list->impl == NULL) {
         return EINVAL;
     }
-    return static_cast<bthread::TidList*>(list->impl)->add(id);
+    return static_cast<fast::TidList*>(list->impl)->add(id);
 }
 
 int bthread_list_stop(bthread_list_t* list) {
     if (list->impl == NULL) {
         return EINVAL;
     }
-    static_cast<bthread::TidList*>(list->impl)->apply(bthread::TidStopper());
+    static_cast<fast::TidList*>(list->impl)->apply(fast::TidStopper());
     return 0;
 }
 
@@ -651,17 +649,17 @@ int bthread_list_join(bthread_list_t* list) {
     if (list->impl == NULL) {
         return EINVAL;
     }
-    static_cast<bthread::TidList*>(list->impl)->apply(bthread::TidJoiner());
+    static_cast<fast::TidList*>(list->impl)->apply(fast::TidJoiner());
     return 0;
 }
 
 bthread_tag_t bthread_self_tag(void) {
-    return bthread::tls_task_group != nullptr ? bthread::tls_task_group->tag()
+    return fast::tls_task_group != nullptr ? fast::tls_task_group->tag()
                                               : BTHREAD_TAG_DEFAULT;
 }
 
 uint64_t bthread_cpu_clock_ns(void) {
-     bthread::TaskGroup* g = bthread::tls_task_group;
+     fast::TaskGroup* g = fast::tls_task_group;
     if (g != NULL && !g->is_current_main_task()) {
         return g->current_task_cpu_clock_ns();
     }

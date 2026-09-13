@@ -23,7 +23,7 @@
 #define BTHREAD_LOG_H
 
 #ifdef BAIDU_INTERNAL
-#include "bthread/comlog_initializer.h"
+#include "comlog_initializer.h"
 #endif
 
 #define BT_VLOG VLOG(100)

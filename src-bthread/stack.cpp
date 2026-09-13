@@ -28,8 +28,8 @@
 #include "butil/third_party/dynamic_annotations/dynamic_annotations.h" // RunningOnValgrind
 #include "butil/third_party/valgrind/valgrind.h"   // VALGRIND_STACK_REGISTER
 #include "bvar/passive_status.h"
-#include "bthread/types.h"                        // BTHREAD_STACKTYPE_*
-#include "bthread/stack.h"
+#include "types.h"                        // BTHREAD_STACKTYPE_*
+#include "stack.h"
 
 DEFINE_int32(stack_size_small, 32768, "size of small stacks");
 DEFINE_int32(stack_size_normal, 1048576, "size of normal stacks");
@@ -38,7 +38,7 @@ DEFINE_int32(guard_page_size, 4096, "size of guard page, allocate stacks by mall
 DEFINE_int32(tc_stack_small, 32, "maximum small stacks cached by each thread");
 DEFINE_int32(tc_stack_normal, 8, "maximum normal stacks cached by each thread");
 
-namespace bthread {
+namespace fast {
 
 BAIDU_CASSERT(BTHREAD_STACKTYPE_PTHREAD == STACK_TYPE_PTHREAD, must_match);
 BAIDU_CASSERT(BTHREAD_STACKTYPE_SMALL == STACK_TYPE_SMALL, must_match);
@@ -150,4 +150,4 @@ int* SmallStackClass::stack_size_flag = &FLAGS_stack_size_small;
 int* NormalStackClass::stack_size_flag = &FLAGS_stack_size_normal;
 int* LargeStackClass::stack_size_flag = &FLAGS_stack_size_large;
 
-}  // namespace bthread
+}  // namespace fast

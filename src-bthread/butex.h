@@ -25,9 +25,9 @@
 #include <errno.h>                               // users need to check errno
 #include <time.h>                                // timespec
 #include "butil/macros.h"                         // BAIDU_CASSERT
-#include "bthread/types.h"                       // bthread_t
+#include "types.h"                       // bthread_t
 
-namespace bthread {
+namespace fast {
 
 // If a thread would suspend for less than so many microseconds, return
 // ETIMEDOUT directly.
@@ -85,6 +85,6 @@ int butex_wait(void* butex, int expected_value,
                const timespec* abstime,
                bool prepend = false);
 
-}  // namespace bthread
+}  // namespace fast
 
 #endif  // BTHREAD_BUTEX_H

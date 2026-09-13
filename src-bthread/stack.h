@@ -24,11 +24,11 @@
 
 #include <assert.h>
 #include <gflags/gflags.h>          // DECLARE_int32
-#include "bthread/types.h"
-#include "bthread/context.h"        // bthread_fcontext_t
+#include "types.h"
+#include "context.h"        // bthread_fcontext_t
 #include "butil/object_pool.h"
 
-namespace bthread {
+namespace fast {
 
 struct StackStorage {
      unsigned stacksize;
@@ -77,8 +77,8 @@ void return_stack(ContextualStack*);
 // (to save contexts before jumping)
 void jump_stack(ContextualStack* from, ContextualStack* to);
 
-}  // namespace bthread
+}  // namespace fast
 
-#include "bthread/stack_inl.h"
+#include "stack_inl.h"
 
 #endif  // BTHREAD_ALLOCATE_STACK_H

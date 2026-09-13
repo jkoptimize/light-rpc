@@ -33,26 +33,24 @@
 #include "butil/files/file.h"
 #include "butil/files/file_path.h"
 #include "butil/file_util.h"
-#include "butil/unique_ptr.h"
 #include "butil/memory/scope_guard.h"
 #include "butil/third_party/murmurhash3/murmurhash3.h"
 #include "butil/third_party/symbolize/symbolize.h"
-#include "butil/logging.h"
 #include "butil/object_pool.h"
 #include "butil/debug/stack_trace.h"
 #include "butil/thread_local.h"
-#include "bthread/butex.h"                       // butex_*
-#include "bthread/mutex.h"                       // bthread_mutex_t
-#include "bthread/sys_futex.h"
-#include "bthread/log.h"
-#include "bthread/processor.h"
-#include "bthread/task_group.h"
+#include "butex.h"                       // butex_*
+#include "mutex.h"                       // bthread_mutex_t
+#include "sys_futex.h"
+#include "log.h"
+#include "processor.h"
+#include "task_group.h"
 
 __BEGIN_DECLS
 extern void* BAIDU_WEAK _dl_sym(void* handle, const char* symbol, void* caller);
 __END_DECLS
 
-namespace bthread {
+namespace fast {
 
 EXTERN_BAIDU_VOLATILE_THREAD_LOCAL(TaskGroup*, tls_task_group);
 
@@ -418,9 +416,9 @@ static pthread_once_t init_sys_mutex_lock_once = PTHREAD_ONCE_INIT;
 //   #6  0x00000000006fc125 in tc_calloc ()
 //   #7  0x00007effdd245690 in _dlerror_run (operate=operate@entry=0x7effdd245130 <dlsym_doit>, args=args@entry=0x7fff483dedf0) at dlerror.c:141
 //   #8  0x00007effdd245198 in __dlsym (handle=<optimized out>, name=<optimized out>) at dlsym.c:70
-//   #9  0x0000000000666517 in bthread::init_sys_mutex_lock () at bthread/mutex.cpp:358
+//   #9  0x0000000000666517 in fast::init_sys_mutex_lock () at bthread/mutex.cpp:358
 //   #10 0x00007effddc97a90 in pthread_once () at ../nptl/sysdeps/unix/sysv/linux/x86_64/pthread_once.S:103
-//   #11 0x000000000066649f in bthread::first_sys_pthread_mutex_lock (mutex=0xbaf880 <_ULx86_64_lock>) at bthread/mutex.cpp:366
+//   #11 0x000000000066649f in fast::first_sys_pthread_mutex_lock (mutex=0xbaf880 <_ULx86_64_lock>) at bthread/mutex.cpp:366
 //   #12 0x00000000006678bc in pthread_mutex_lock_impl (mutex=0xbaf880 <_ULx86_64_lock>) at bthread/mutex.cpp:489
 //   #13 pthread_mutex_lock (__mutex=__mutex@entry=0xbaf880 <_ULx86_64_lock>) at bthread/mutex.cpp:751
 //   #14 0x00000000004c6ea1 in _ULx86_64_init () at x86_64/Gglobal.c:83
@@ -759,13 +757,13 @@ static void DestroyMutexOwnerMapEntry(pthread_mutex_t* mutex) {
 }
 
 #define INIT_MUTEX_OWNER_MAP_ENTRY(mutex, mutexattr) \
-    ::bthread::internal::InitMutexOwnerMapEntry(mutex, mutexattr)
+    ::fast::internal::InitMutexOwnerMapEntry(mutex, mutexattr)
 
 #define DESTROY_MUTEX_OWNER_MAP_ENTRY(mutex) \
-    ::bthread::internal::DestroyMutexOwnerMapEntry(mutex)
+    ::fast::internal::DestroyMutexOwnerMapEntry(mutex)
 
 #define FIND_SYS_PTHREAD_MUTEX_OWNER_MAP_ENTRY(mutex) \
-    MutexOwnerMapEntry* entry = ::bthread::internal::FindMutexOwnerMapEntry(mutex)
+    MutexOwnerMapEntry* entry = ::fast::internal::FindMutexOwnerMapEntry(mutex)
 
 #define SYS_PTHREAD_MUTEX_CHECK_OWNER              \
     if (NULL != entry) {                           \
@@ -1001,8 +999,8 @@ const MutexInternal MUTEX_CONTENDED_RAW = {{1},{1},0};
 const MutexInternal MUTEX_LOCKED_RAW = {{1},{0},0};
 // Define as macros rather than constants which can't be put in read-only
 // section and affected by initialization-order fiasco.
-#define BTHREAD_MUTEX_CONTENDED (*(const unsigned*)&bthread::MUTEX_CONTENDED_RAW)
-#define BTHREAD_MUTEX_LOCKED (*(const unsigned*)&bthread::MUTEX_LOCKED_RAW)
+#define BTHREAD_MUTEX_CONTENDED (*(const unsigned*)&fast::MUTEX_CONTENDED_RAW)
+#define BTHREAD_MUTEX_LOCKED (*(const unsigned*)&fast::MUTEX_LOCKED_RAW)
 
 BAIDU_CASSERT(sizeof(unsigned) == sizeof(MutexInternal),
               sizeof_mutex_internal_must_equal_unsigned);
@@ -1065,7 +1063,7 @@ inline int mutex_lock_contended_impl(bthread_mutex_t* __restrict m,
     bool first_wait = true;
     auto whole = (butil::atomic<unsigned>*)m->butex;
     while (whole->exchange(BTHREAD_MUTEX_CONTENDED) & BTHREAD_MUTEX_LOCKED) {
-        if (bthread::butex_wait(whole, BTHREAD_MUTEX_CONTENDED, abstime, queue_lifo) < 0 &&
+        if (fast::butex_wait(whole, BTHREAD_MUTEX_CONTENDED, abstime, queue_lifo) < 0 &&
             errno != EWOULDBLOCK && errno != EINTR/*note*/) {
             // A mutex lock should ignore interruptions in general since
             // user code is unlikely to check the return value.
@@ -1136,7 +1134,7 @@ void FastPthreadMutex::lock() {
 }
 
 bool FastPthreadMutex::try_lock() {
-    auto split = (bthread::MutexInternal*)&_futex;
+    auto split = (fast::MutexInternal*)&_futex;
     bool lock = !split->locked.exchange(1, butil::memory_order_acquire);
     if (lock) {
         PTHREAD_MUTEX_SET_OWNER(_owner);
@@ -1180,15 +1178,15 @@ bool FastPthreadMutex::timed_lock(const struct timespec* abstime) {
 }
 #endif // BTHREAD_USE_FAST_PTHREAD_MUTEX HAS_PTHREAD_MUTEX_TIMEDLOCK
 
-} // namespace bthread
+} // namespace fast
 
 __BEGIN_DECLS
 
 int bthread_mutex_init(bthread_mutex_t* __restrict m,
                        const bthread_mutexattr_t* __restrict attr) {
-    bthread::make_contention_site_invalid(&m->csite);
+    fast::make_contention_site_invalid(&m->csite);
     MUTEX_RESET_OWNER_COMMON(m->owner);
-    m->butex = bthread::butex_create_checked<unsigned>();
+    m->butex = fast::butex_create_checked<unsigned>();
     if (!m->butex) {
         return ENOMEM;
     }
@@ -1198,38 +1196,38 @@ int bthread_mutex_init(bthread_mutex_t* __restrict m,
 }
 
 int bthread_mutex_destroy(bthread_mutex_t* m) {
-    bthread::butex_destroy(m->butex);
+    fast::butex_destroy(m->butex);
     return 0;
 }
 
 int bthread_mutex_trylock(bthread_mutex_t* m) {
-    return bthread::mutex_trylock_impl(m);
+    return fast::mutex_trylock_impl(m);
 }
 
 int bthread_mutex_lock_contended(bthread_mutex_t* m) {
-    return bthread::mutex_lock_contended_impl(m, NULL);
+    return fast::mutex_lock_contended_impl(m, NULL);
 }
 
 static int bthread_mutex_lock_impl(bthread_mutex_t* __restrict m,
                                    const struct timespec* __restrict abstime) {
-    if (0 == bthread::mutex_trylock_impl(m)) {
+    if (0 == fast::mutex_trylock_impl(m)) {
         return 0;
     }
     // Don't sample when contention profiler is off.
-    if (!bthread::g_cp) {
-        return bthread::mutex_lock_contended_impl(m, abstime);
+    if (!fast::g_cp) {
+        return fast::mutex_lock_contended_impl(m, abstime);
     }
     // Ask Collector if this (contended) locking should be sampled.
     const size_t sampling_range =
-        m->enable_csite ? bvar::is_collectable(&bthread::g_cp_sl) : bvar::INVALID_SAMPLING_RANGE;
+        m->enable_csite ? bvar::is_collectable(&fast::g_cp_sl) : bvar::INVALID_SAMPLING_RANGE;
     if (!bvar::is_sampling_range_valid(sampling_range)) { // Don't sample
-        return bthread::mutex_lock_contended_impl(m, abstime);
+        return fast::mutex_lock_contended_impl(m, abstime);
     }
     // Start sampling.
     const int64_t start_ns = butil::cpuwide_time_ns();
     // NOTE: Don't modify m->csite outside lock since multiple threads are
     // still contending with each other.
-    const int rc = bthread::mutex_lock_contended_impl(m, abstime);
+    const int rc = fast::mutex_lock_contended_impl(m, abstime);
     if (!rc) { // Inside lock
         m->csite.duration_ns = butil::cpuwide_time_ns() - start_ns;
         m->csite.sampling_range = sampling_range;
@@ -1237,7 +1235,7 @@ static int bthread_mutex_lock_impl(bthread_mutex_t* __restrict m,
         // Failed to lock due to ETIMEDOUT, submit the elapse directly.
         const int64_t end_ns = butil::cpuwide_time_ns();
         const bthread_contention_site_t csite = {end_ns - start_ns, sampling_range};
-        bthread::submit_contention(csite, end_ns);
+        fast::submit_contention(csite, end_ns);
     }
     return rc;
 }
@@ -1254,10 +1252,10 @@ int bthread_mutex_timedlock(bthread_mutex_t* __restrict m,
 int bthread_mutex_unlock(bthread_mutex_t* m) {
     auto whole = (butil::atomic<unsigned>*)m->butex;
     bthread_contention_site_t saved_csite = {0, 0};
-    bool is_valid = bthread::is_contention_site_valid(m->csite);
+    bool is_valid = fast::is_contention_site_valid(m->csite);
     if (is_valid) {
         saved_csite = m->csite;
-        bthread::make_contention_site_invalid(&m->csite);
+        fast::make_contention_site_invalid(&m->csite);
     }
     MUTEX_RESET_OWNER_COMMON(m->owner);
     const unsigned prev = whole->exchange(0, butil::memory_order_release);
@@ -1267,14 +1265,14 @@ int bthread_mutex_unlock(bthread_mutex_t* m) {
     }
     // Wakeup one waiter
     if (!is_valid) {
-        bthread::butex_wake(whole);
+        fast::butex_wake(whole);
         return 0;
     }
     const int64_t unlock_start_ns = butil::cpuwide_time_ns();
-    bthread::butex_wake(whole);
+    fast::butex_wake(whole);
     const int64_t unlock_end_ns = butil::cpuwide_time_ns();
     saved_csite.duration_ns += unlock_end_ns - unlock_start_ns;
-    bthread::submit_contention(saved_csite, unlock_end_ns);
+    fast::submit_contention(saved_csite, unlock_end_ns);
     return 0;
 }
 
@@ -1298,31 +1296,31 @@ int bthread_mutexattr_destroy(bthread_mutexattr_t* attr) {
 int pthread_mutex_init(pthread_mutex_t * __restrict mutex,
                        const pthread_mutexattr_t* __restrict mutexattr) {
     INIT_MUTEX_OWNER_MAP_ENTRY(mutex, mutexattr);
-    return bthread::sys_pthread_mutex_init(mutex, mutexattr);
+    return fast::sys_pthread_mutex_init(mutex, mutexattr);
 }
 
 int pthread_mutex_destroy(pthread_mutex_t* mutex) {
     DESTROY_MUTEX_OWNER_MAP_ENTRY(mutex);
-    return bthread::sys_pthread_mutex_destroy(mutex);
+    return fast::sys_pthread_mutex_destroy(mutex);
 }
 
 int pthread_mutex_lock(pthread_mutex_t* mutex) {
-    return bthread::pthread_mutex_lock_impl(mutex);
+    return fast::pthread_mutex_lock_impl(mutex);
 }
 
 #if defined(OS_LINUX) && defined(OS_POSIX) && defined(__USE_XOPEN2K)
 int pthread_mutex_timedlock(pthread_mutex_t *__restrict __mutex,
 				            const struct timespec *__restrict __abstime) {
-    return bthread::pthread_mutex_timedlock_impl(__mutex, __abstime);
+    return fast::pthread_mutex_timedlock_impl(__mutex, __abstime);
 }
 #endif // OS_POSIX __USE_XOPEN2K
 
 int pthread_mutex_trylock(pthread_mutex_t* mutex) {
-    return bthread::pthread_mutex_trylock_impl(mutex);
+    return fast::pthread_mutex_trylock_impl(mutex);
 }
 
 int pthread_mutex_unlock(pthread_mutex_t* mutex) {
-    return bthread::pthread_mutex_unlock_impl(mutex);
+    return fast::pthread_mutex_unlock_impl(mutex);
 }
 #endif // NO_PTHREAD_MUTEX_HOOK
 

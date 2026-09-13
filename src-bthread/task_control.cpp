@@ -24,18 +24,17 @@
 #include <regex>
 #include <sys/syscall.h>                   // SYS_gettid
 #include "butil/scoped_lock.h"             // BAIDU_SCOPED_LOCK
-#include "butil/errno.h"                   // berror
-#include "butil/logging.h"
+#include <cstring>
 #include "butil/threading/platform_thread.h"
 #include "butil/third_party/murmurhash3/murmurhash3.h"
-#include "bthread/sys_futex.h"            // futex_wake_private
-#include "bthread/interrupt_pthread.h"
-#include "bthread/processor.h"            // cpu_relax
-#include "bthread/task_group.h"           // TaskGroup
-#include "bthread/task_control.h"
-#include "bthread/timer_thread.h"         // global_timer_thread
+#include "sys_futex.h"            // futex_wake_private
+#include "interrupt_pthread.h"
+#include "processor.h"            // cpu_relax
+#include "task_group.h"           // TaskGroup
+#include "task_control.h"
+#include "timer_thread.h"         // global_timer_thread
 #include <gflags/gflags.h>
-#include "bthread/log.h"
+#include "log.h"
 #if defined(OS_MACOSX)
 #include <mach/mach.h>
 #endif
@@ -51,7 +50,7 @@ DEFINE_string(cpu_set, "",
               "Set of CPUs to which cores are bound. "
               "for example, 0-3,5,7; default: disable");
 
-namespace bthread {
+namespace fast {
 
 DEFINE_bool(parking_lot_no_signal_when_no_waiter, false,
             "ParkingLot doesn't signal when there is no waiter. "
@@ -689,4 +688,4 @@ std::vector<bthread_t> TaskControl::get_living_bthreads() {
     return living_bthread_ids;
 }
 
-}  // namespace bthread
+}  // namespace fast
