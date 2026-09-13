@@ -134,7 +134,7 @@ int FastServer::OnProcessRequest(IOBuf& frame, void* arg) {
 
         IOBuf* large_frame = ep->GetLargeFrame(rpc_id);
         if (large_frame == nullptr) {
-            LOG_ERR("OnProcessRequest: GetLargeFrame failed for rpc_id=%u", rpc_id);
+            PLOG(ERROR) << "OnProcessRequest: GetLargeFrame failed for rpc_id=" << rpc_id;
             return -1;
         }
         if (ep->CutSegFromIOBuf(large_frame, rkey, remote_addr, rkey, rpc_id) < 0) {
@@ -157,7 +157,7 @@ int FastServer::OnProcessRequest(IOBuf& frame, void* arg) {
         frame.cutn(&meta_buf, meta_len);
         IOBufAsZeroCopyInputStream zcis(meta_buf);
         if (!meta.ParseFromZeroCopyStream(&zcis)) {
-            LOG_ERR("OnProcessRequest: failed to parse meta");
+            PLOG(ERROR) << "OnProcessRequest: failed to parse meta";
             return -1;  // rpc_id unavailable — client will timeout
         }
     }
@@ -170,7 +170,7 @@ int FastServer::OnProcessRequest(IOBuf& frame, void* arg) {
     // Header: total_len(4) + msg_type(4) + rpc_id(4) + meta_len(4) + meta(meta_len) = 16 + meta_len
     uint32_t header_size = 16 + meta_len;
     if (total_len < header_size || attachment_size > total_len - header_size) {
-        LOG_ERR("OnProcessRequest: frame overflow, rpc_id=%u", rpc_id);
+        PLOG(ERROR) << "OnProcessRequest: frame overflow, rpc_id=" << rpc_id;
         SendErrorResponse(ep, rpc_id, ERR_BAD_REQUEST);
         return -1;
     }
@@ -179,14 +179,14 @@ int FastServer::OnProcessRequest(IOBuf& frame, void* arg) {
     // Look up service.
     auto svc_iter = server->service_map_.find(service_name);
     if (svc_iter == server->service_map_.end()) {
-        LOG_ERR("OnProcessRequest: unknown service %s", service_name.c_str());
+        PLOG(ERROR) << "OnProcessRequest: unknown service " << service_name;
         SendErrorResponse(ep, rpc_id, ERR_UNKNOWN_SERVICE);
         return -1;
     }
     auto* service = svc_iter->second.service;
     auto* method = service->GetDescriptor()->FindMethodByName(method_name);
     if (method == nullptr) {
-        LOG_ERR("OnProcessRequest: unknown method %s", method_name.c_str());
+        PLOG(ERROR) << "OnProcessRequest: unknown method " << method_name;
         SendErrorResponse(ep, rpc_id, ERR_UNKNOWN_METHOD);
         return -1;
     }
@@ -203,7 +203,7 @@ int FastServer::OnProcessRequest(IOBuf& frame, void* arg) {
         frame.cutn(&payload_buf, payload_len);
         IOBufAsZeroCopyInputStream zcis(payload_buf);
         if (!request->ParseFromZeroCopyStream(&zcis)) {
-            LOG_ERR("OnProcessRequest: failed to parse request, rpc_id=%u", rpc_id);
+            PLOG(ERROR) << "OnProcessRequest: failed to parse request, rpc_id=" << rpc_id;
             SendErrorResponse(ep, rpc_id, ERR_BAD_REQUEST);
             return -1;
         }

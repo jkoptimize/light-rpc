@@ -407,7 +407,6 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
         g->_control->_task_tracer.set_status(TASK_STATUS_UNKNOWN, m);
 #endif // BRPC_BTHREAD_TRACER
 
-        g->_control->_nbthreads.fetch_sub(1, std::memory_order_relaxed);
         g->set_remained(_release_last_context, m);
         ending_sched(&g);
 
@@ -465,7 +464,6 @@ int TaskGroup::start_foreground(TaskGroup** pg,
     }
 
     TaskGroup* g = *pg;
-    g->_control->_nbthreads.fetch_add(1, std::memory_order_relaxed);
 #ifdef BRPC_BTHREAD_TRACER
     g->_control->_task_tracer.set_status(TASK_STATUS_CREATED, m);
 #endif // BRPC_BTHREAD_TRACER
@@ -527,7 +525,6 @@ int TaskGroup::start_background(bthread_t* __restrict th,
     if (using_attr.flags & BTHREAD_LOG_START_AND_FINISH) {
         LOG(INFO) << "Started bthread " << m->tid;
     }
-    _control->_nbthreads.fetch_add(1, std::memory_order_relaxed);
 #ifdef BRPC_BTHREAD_TRACER
     _control->_task_tracer.set_status(TASK_STATUS_CREATED, m);
 #endif // BRPC_BTHREAD_TRACER

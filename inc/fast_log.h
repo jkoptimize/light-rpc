@@ -1,114 +1,119 @@
 #pragma once
 
-#include <error.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <atomic>
+#include <cerrno>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <sstream>
-#include <memory>
+#include <string>
+#include <sys/time.h>
 
-namespace fast
-{
+// The output backend remains local. The macros and check/rate-limit helpers
+// in detail/fast_log_macros.h are ported from brpc; see the port record.
+namespace fast {
 
-#define LOG_INFO(M, ...) \
-  fprintf(stderr, "[INFO] (%s:%d) " M "\n", __FILE__, __LINE__, ##__VA_ARGS__)
+enum LogLevel { INFO, ERROR, FATAL };
 
-#define LOG_ERR(M, ...)                          \
-  fprintf(stderr,                                \
-          "[ERROR] (%s:%d: errno: %s) " M "\n",  \
-          __FILE__,                              \
-          __LINE__,                              \
-          errno == 0 ? "None" : strerror(errno), \
-          ##__VA_ARGS__)
+inline std::atomic<int> min_log_level{INFO};
 
-#define CHECK(COND)                        \
-  do                                       \
-  {                                        \
-    if (!(COND))                           \
-    {                                      \
-      LOG_ERR("Check failure: %s", #COND); \
-      exit(EXIT_FAILURE);                  \
-    }                                      \
-  } while (0);
+inline int GetMinLogLevel() {
+    return min_log_level.load(std::memory_order_relaxed);
+}
 
-  enum LogLevel
-  {
-    INFO,
-    ERROR,
-    FATAL
-  };
+inline void SetMinLogLevel(int level) {
+    // Fatal errors must always be emitted and terminate the process.
+    min_log_level.store(level > FATAL ? FATAL : level,
+                        std::memory_order_relaxed);
+}
 
-  // 日志流类，负责收集日志内容并在析构时输出
-  class LogMessage
-  {
-  public:
+class LogMessage {
+public:
     explicit LogMessage(LogLevel level) : level_(level) {}
-    ~LogMessage()
-    {
-      std::cerr << stream_.str() << std::endl;
+    LogMessage(const char*, int, const char*, LogLevel level)
+        : LogMessage(level) {}
+    LogMessage(const char* file, int line, const char* func, std::string* result)
+        : LogMessage(file, line, func, FATAL, result) {}
+    LogMessage(const char* file, int line, const char* func, LogLevel level,
+               std::string* result)
+        : LogMessage(file, line, func, level) {
+        stream_ << "Check failed: " << *result;
+        delete result;
+    }
+    ~LogMessage() {
+        std::cerr << stream_.str() << std::endl;
+        if (level_ == FATAL) {
+            abort();
+        }
     }
 
-    // 模板化的 operator<<，支持任意类型，实现流式拼接
+    std::ostream& stream() { return stream_; }
+
     template <typename T>
-    LogMessage &operator<<(const T &value)
-    {
-      stream_ << value;
-      return *this;
+    LogMessage& operator<<(const T& value) {
+        stream_ << value;
+        return *this;
+    }
+    LogMessage& operator<<(std::ostream& (*manip)(std::ostream&)) {
+        manip(stream_);
+        return *this;
     }
 
-    // 针对 std::ostream 操纵符（如 std::endl）的重载
-    LogMessage &operator<<(std::ostream &(*manip)(std::ostream &))
-    {
-      manip(stream_);
-      return *this;
-    }
+    LogMessage(const LogMessage&) = delete;
+    LogMessage& operator=(const LogMessage&) = delete;
 
-  private:
+private:
     LogLevel level_;
     std::ostringstream stream_;
+};
 
-    // 禁止拷贝，防止临时对象析构问题
-    LogMessage(const LogMessage &) = delete;
-    LogMessage &operator=(const LogMessage &) = delete;
-  };
-
-  // 代理类，用于 LOG_IF
-  class LogMessageProxy
-  {
-  public:
-    LogMessageProxy(LogLevel level, bool condition)
-    {
-      if (condition)
-      {
-        msg_ = std::make_unique<LogMessage>(level);
-      }
+// Capture errno before evaluating stream arguments, append it at destruction,
+// as in brpc's POSIX ErrnoLogMessage. Symbolization/backtrace is not ported.
+class ErrnoLogMessage {
+public:
+    ErrnoLogMessage(const char* file, int line, const char* func, LogLevel level,
+                    int error)
+        : error_(error), message_(file, line, func, level) {}
+    ~ErrnoLogMessage() {
+        stream() << ": " << strerror(error_) << " [errno=" << error_ << ']';
     }
+    std::ostream& stream() { return message_.stream(); }
 
-    // 转发所有 << 操作到内部的 LogMessage（如果存在）
-    template <typename T>
-    LogMessageProxy &operator<<(const T &val)
-    {
-      if (msg_)
-        *msg_ << val;
-      return *this;
-    }
+private:
+    int error_;
+    LogMessage message_;
+};
 
-    LogMessageProxy &operator<<(std::ostream &(*manip)(std::ostream &))
-    {
-      if (msg_)
-        *msg_ << manip;
-      return *this;
-    }
+namespace logging_detail {
+// Equivalent primitives for brpc's NoBarrier atomic operations. Keep the
+// previous-value CAS and new-value increment return conventions.
+using Atomic32 = std::atomic<int32_t>;
+using Atomic64 = std::atomic<int64_t>;
+static_assert(Atomic32::is_always_lock_free && Atomic64::is_always_lock_free,
+              "logging rate limits require lock-free atomics");
 
-  private:
-    std::unique_ptr<LogMessage> msg_;
-    LogMessageProxy(const LogMessageProxy &) = delete;
-    LogMessageProxy &operator=(const LogMessageProxy &) = delete;
-  };
+inline int32_t NoBarrier_AtomicIncrement(Atomic32* ptr, int32_t increment) {
+    return ptr->fetch_add(increment, std::memory_order_relaxed) + increment;
+}
 
-// 定义 LOG 宏，展开为创建 LogMessage 临时对象
-#define LOG(level) LogMessage(level)
-#define LOG_IF(level, condition) LogMessageProxy(level, condition)
+inline int64_t NoBarrier_CompareAndSwap(Atomic64* ptr, int64_t old_value,
+                                      int64_t new_value) {
+    ptr->compare_exchange_strong(old_value, new_value,
+                                std::memory_order_relaxed,
+                                std::memory_order_relaxed);
+    return old_value;
+}
 
-} // namespace fast
+// Same clock and conversion as butil::gettimeofday_us(). Keep wall-clock
+// rollback behavior identical to the upstream EVERY_SECOND macros.
+inline int64_t gettimeofday_us() {
+    timeval now;
+    gettimeofday(&now, NULL);
+    return now.tv_sec * 1000000L + now.tv_usec;
+}
+}  // namespace logging_detail
+}  // namespace fast
+
+#include "detail/fast_log_macros.h"

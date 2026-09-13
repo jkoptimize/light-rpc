@@ -73,7 +73,7 @@ int allocate_stack_storage(StackStorage* s, int stacksize_in, int guardsize_in) 
                                (MAP_PRIVATE | MAP_ANONYMOUS), -1, 0);
 
         if (MAP_FAILED == mem) {
-            PLOG_EVERY_SECOND(ERROR) 
+            PLOG_EVERY_SECOND(ERROR)
                 << "Fail to mmap size=" << memsize << " stack_count="
                 << s_stack_count.load(std::memory_order_relaxed)
                 << ", possibly limited by /proc/sys/vm/max_map_count";
@@ -90,7 +90,7 @@ int allocate_stack_storage(StackStorage* s, int stacksize_in, int guardsize_in) 
         if (guardsize <= offset ||
             mprotect(aligned_mem, guardsize - offset, PROT_NONE) != 0) {
             munmap(mem, memsize);
-            PLOG_EVERY_SECOND(ERROR) 
+            PLOG_EVERY_SECOND(ERROR)
                 << "Fail to mprotect " << (void*)aligned_mem << " length="
                 << guardsize - offset; 
             return -1;

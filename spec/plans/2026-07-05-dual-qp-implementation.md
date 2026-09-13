@@ -624,14 +624,14 @@ int FastRdmaEndpoint::GetAndAckEvents() {
         void*   ctx = nullptr;
         if (ibv_get_cq_event(comp_channel_, &cq, &ctx) != 0) {
             if (errno == EAGAIN) break;
-            LOG_ERR("Fail to get cq event");
+            PLOG(ERROR) << "Fail to get cq event";
             return -1;
         }
         if (cq == send_cq_)            ++send_cq_events;
         else if (cq == recv_cq_)       ++recv_cq_events;
         else if (cq == data_send_cq_)  ++data_send_cq_events;
         else if (cq == data_recv_cq_)  ++data_recv_cq_events;
-        else LOG_ERR("Unknown CQ event");
+        else PLOG(ERROR) << "Unknown CQ event";
     }
     // ack 4 CQ
     if (send_cq_events >= MAX_CQ_EVENTS)      { ibv_ack_cq_events(send_cq_, send_cq_events); send_cq_events = 0; }

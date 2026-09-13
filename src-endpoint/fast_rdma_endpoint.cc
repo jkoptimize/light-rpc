@@ -901,14 +901,15 @@ int FastRdmaEndpoint::StartAsyncConnect() {
     int ret = connect(sock_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
     if (ret < 0 && errno != EINPROGRESS) {
         close(sock_fd);
-        LOG_ERR("Fail to connect to %s:%d", _remote_ip.c_str(), _remote_port);
+        PLOG(ERROR) << "Fail to connect to " << _remote_ip << ":" << _remote_port;
         return -1;
     }
 
     tcp_fd_ = sock_fd;
     EventDispatcher::GetInstance().RegisterEvent(
         sock_fd, OnClientHandshake, nullptr, this, EPOLLOUT | EPOLLET);
-    LOG_INFO("Async connect to %s:%d fd=%d", _remote_ip.c_str(), _remote_port, sock_fd);
+    LOG(INFO) << "Async connect to " << _remote_ip << ":" << _remote_port
+              << " fd=" << sock_fd;
     return 0;
 }
 
@@ -927,14 +928,14 @@ int FastRdmaEndpoint::GetAndAckEvents() {
         void*   ctx = nullptr;
         if (ibv_get_cq_event(comp_channel_, &cq, &ctx) != 0) {
             if (errno == EAGAIN) break;
-            LOG_ERR("Fail to get cq event");
+            PLOG(ERROR) << "Fail to get cq event";
             return -1;
         }
         if (cq == send_cq_)            ++send_cq_events;
         else if (cq == recv_cq_)       ++recv_cq_events;
         else if (cq == data_send_cq_)  ++data_send_cq_events;
         else if (cq == data_recv_cq_)  ++data_recv_cq_events;
-        else LOG_ERR("Unknown CQ event");
+        else PLOG(ERROR) << "Unknown CQ event";
     }
     if (send_cq_events >= MAX_CQ_EVENTS) {
         ibv_ack_cq_events(send_cq_, send_cq_events);
@@ -970,7 +971,7 @@ void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t events) {
         if (client_fd < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
             if (errno == EINTR) continue;
-            LOG_ERR("accept error, fd=%d errno=%d", listen_fd, errno);
+            PLOG(ERROR) << "accept error, fd=" << listen_fd;
             return;
         }
         fcntl(client_fd, F_SETFL, O_NONBLOCK);
@@ -1021,7 +1022,7 @@ void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
     EventDispatcher::GetInstance().UnregisterEvent(fd);
     if (events & (EPOLLERR | EPOLLHUP)) {
         close(fd);
-        LOG_ERR("Client handshake error on fd=%d (EPOLLERR/EPOLLHUP)", fd);
+        PLOG(ERROR) << "Client handshake error on fd=" << fd << " (EPOLLERR/EPOLLHUP)";
         return;
     }
 
@@ -1030,7 +1031,7 @@ void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
     socklen_t len = sizeof(so_err);
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &len) < 0 || so_err != 0) {
         close(fd);
-        LOG_ERR("Client handshake connect error on fd=%d, so_err=%d", fd, so_err);
+        PLOG(ERROR) << "Client handshake connect error on fd=" << fd << ", so_err=" << so_err;
         return;
     }
 
@@ -1050,7 +1051,7 @@ void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
                 }).detach();
             }
         } else {
-            LOG_ERR("Client handshake failed on fd=%d", fd);
+            PLOG(ERROR) << "Client handshake failed on fd=" << fd;
         }
         ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
     }).detach();
@@ -1127,9 +1128,9 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
             case 1: {  // data_recv_cq
                 uint32_t rkey = ntohl(wc[i].imm_data);
                 if (wc[i].status != IBV_WC_SUCCESS) {
-                    LOG_ERR("data_recv_cq WC error: opcode=%d status=%d(%s) wr_id=%lu",
-                            wc[i].opcode, wc[i].status,
-                            ibv_wc_status_str(wc[i].status), wc[i].wr_id);
+                    PLOG(ERROR) << "data_recv_cq WC error: opcode=" << wc[i].opcode
+                                << " status=" << wc[i].status << "("
+                                << ibv_wc_status_str(wc[i].status) << ") wr_id=" << wc[i].wr_id;
                     std::lock_guard<std::mutex> lock(ep->pending_large_mutex_);
                     auto it = ep->pending_large_map_.find(rkey);
                     if (it != ep->pending_large_map_.end()) {
@@ -1150,7 +1151,7 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                             [mr](void*) { ReturnLargeBlock(mr); }, 0);
                         ep->read_buf_.append(std::move(frame));
                     } else {
-                        LOG_ERR("pending_large_map_ find failed for rkey=%u", rkey);
+                        PLOG(ERROR) << "pending_large_map_ find failed for rkey=" << rkey;
                     }
                 }
                 break;
@@ -1161,9 +1162,9 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                 break;
             case 3: {  // data_send_cq
                 if (wc[i].status != IBV_WC_SUCCESS) {
-                    LOG_ERR("data_send_cq WC error: opcode=%d status=%d(%s) wr_id=%lu",
-                            wc[i].opcode, wc[i].status,
-                            ibv_wc_status_str(wc[i].status), wc[i].wr_id);
+                    PLOG(ERROR) << "data_send_cq WC error: opcode=" << wc[i].opcode
+                                << " status=" << wc[i].status << "("
+                                << ibv_wc_status_str(wc[i].status) << ") wr_id=" << wc[i].wr_id;
                     ep->ReleaseLargeFrame(static_cast<uint32_t>(wc[i].wr_id));
                     ep->OnLargeTransferComplete();
                     continue;

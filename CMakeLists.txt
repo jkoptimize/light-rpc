@@ -5,7 +5,9 @@ project(FAST-RPC LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_FLAGS_DEBUG "-g")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+
+enable_testing()
 
 find_package(Protobuf REQUIRED)
 find_package(Boost REQUIRED)
@@ -25,6 +27,7 @@ add_library(fastrpc STATIC ${FAST_SRC} ${IMPL_PROTO_SRCS})
 target_link_libraries(fastrpc "-libverbs -lrdmacm -lpthread" ${Boost_LIBRARIES} protobuf::libprotobuf)
 
 add_subdirectory(src-bthread)
+add_subdirectory(test/logging)
 
 protobuf_generate_cpp(TEST_PROTO_SRCS TEST_PROTO_HDRS test/test.proto)
 

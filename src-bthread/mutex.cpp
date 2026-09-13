@@ -657,7 +657,7 @@ void submit_contention(const bthread_contention_site_t& csite, int64_t now_ns) {
         ->store(false, std::memory_order_relaxed)
 
 #define PTHREAD_MUTEX_SET_OWNER(owner)                                               \
-    owner.id = pthread_numeric_id();                                                 \
+    owner.id = pthread_self();                                                 \
     ((std::atomic<bool>*)&(owner).hold)                                            \
         ->store(true, std::memory_order_release)
 
@@ -666,7 +666,7 @@ void submit_contention(const bthread_contention_site_t& csite, int64_t now_ns) {
 #define PTHREAD_MUTEX_CHECK_OWNER(owner)                                             \
     bool hold = ((std::atomic<bool>*)&(owner).hold)                                \
         ->load(std::memory_order_acquire);                                         \
-    if (hold && (owner).id == pthread_numeric_id()) {                                \
+    if (hold && (owner).id == pthread_self()) {                                \
         fast::butil::debug::StackTrace trace(true);                                        \
         LOG(ERROR) << "Detected deadlock caused by double lock of FastPthreadMutex:" \
                    << std::endl << trace.ToString();                                 \
@@ -1007,7 +1007,7 @@ BAIDU_CASSERT(sizeof(unsigned) == sizeof(MutexInternal),
         if (NULL != task_group && !task_group->is_current_main_task()) {                    \
             m->owner.id = bthread_self();                                                   \
         } else {                                                                            \
-            m->owner.id = pthread_numeric_id();                                             \
+            m->owner.id = pthread_self();                                             \
         }                                                                                   \
         ((std::atomic<bool>*)&m->owner.hold)                                              \
             ->store(true, std::memory_order_release);                                     \
@@ -1019,7 +1019,7 @@ BAIDU_CASSERT(sizeof(unsigned) == sizeof(MutexInternal),
         bool hold = ((std::atomic<bool>*)&m->owner.hold)                                   \
             ->load(std::memory_order_acquire);                                             \
         bool double_lock =                                                                   \
-            hold && (m->owner.id == bthread_self() || m->owner.id == pthread_numeric_id());  \
+            hold && (m->owner.id == bthread_self() || m->owner.id == pthread_self());  \
         if (double_lock) {                                                                   \
             fast::butil::debug::StackTrace trace(true);                                            \
             LOG(ERROR) << "Detected deadlock caused by double lock of bthread_mutex_t:"      \

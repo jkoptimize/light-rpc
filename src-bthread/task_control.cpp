@@ -93,19 +93,17 @@ void* TaskControl::worker_thread(void* arg) {
         bind_thread_to_cpu(pthread_self(), c->_cpus[worker_id % c->_cpus.size()]);
     }
     if (FastBthreadConfig::Get().task_group_set_worker_name) {
-        std::string worker_thread_name = fast::butil::string_printf(
-            "brpc_wkr:%d-%d", g->tag(), worker_id);
-        fast::butil::PlatformThread::SetNameSimple(worker_thread_name.c_str());
+        char name[32];
+        snprintf(name, sizeof(name), "brpc_wkr:%d-%d", g->tag(), worker_id);
+        pthread_setname_np(pthread_self(), name);
     }
     tls_task_group = g;
-    c->_nworkers.fetch_add(1, std::memory_order_relaxed);
 
     g->run_main_task();
 
     stat = g->main_stat();
     tls_task_group = NULL;
     g->destroy_self();
-    c->_nworkers.fetch_sub(1, std::memory_order_relaxed);
     return NULL;
 }
 
@@ -371,7 +369,7 @@ int TaskControl::_add_group(TaskGroup* g, bthread_tag_t tag) {
         return -1;
     }
     g->set_tag(tag);
-    g->set_pl(&_tagged_pl[tag][fast::butil::fmix64(pthread_numeric_id()) % _pl_num_of_each_tag]);
+    g->set_pl(&_tagged_pl[tag][fast::butil::fmix64(pthread_self()) % _pl_num_of_each_tag]);
     size_t ngroup = _tagged_ngroup[tag].load(std::memory_order_relaxed);
     if (ngroup < (size_t)BTHREAD_MAX_CONCURRENCY) {
         _tagged_groups[tag][ngroup] = g;
@@ -386,7 +384,7 @@ int TaskControl::_add_group(TaskGroup* g, bthread_tag_t tag) {
 
 void TaskControl::delete_task_group(void* arg) {
     delete(TaskGroup*)arg;
-}
+}s
 
 int TaskControl::_destroy_group(TaskGroup* g) {
     if (NULL == g) {
@@ -486,7 +484,7 @@ void TaskControl::signal_task(int num_task, bthread_tag_t tag) {
         num_task = 2;
     }
     auto& pl = tag_pl(tag);
-    size_t start_index = fast::butil::fmix64(pthread_numeric_id()) % _pl_num_of_each_tag;
+    size_t start_index = fast::butil::fmix64(pthread_self()) % _pl_num_of_each_tag;
     for (size_t i = 0; i < _pl_num_of_each_tag && num_task > 0; ++i) {
         num_task -= pl[start_index].signal(1);
         if (++start_index >= _pl_num_of_each_tag) {

@@ -12,8 +12,11 @@ set(BTHREAD_SOURCES
 
 add_library(fast_bthread STATIC ${BTHREAD_SOURCES})
 
-target_include_directories(fast_bthread PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}  # for #include "butil/xxx.h"
+# Only quoted project headers should search this flattened directory.
+# Using -I here would make src-bthread/errno.h shadow the system <errno.h>,
+# including when it is included indirectly through <cerrno> or <mutex>.
+target_compile_options(fast_bthread PUBLIC
+    "-iquote${CMAKE_CURRENT_SOURCE_DIR}"  # for #include "butil/xxx.h"
 )
 
 target_link_libraries(fast_bthread PUBLIC pthread)

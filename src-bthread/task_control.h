@@ -31,7 +31,9 @@
 #include <array>
 #include <memory>
 #include <atomic>
+#ifdef BRPC_BTHREAD_TRACER
 #include "task_tracer.h"
+#endif
 #include "task_meta.h"                  // TaskMeta
 #include "work_stealing_queue.h"        // WorkStealingQueue
 #include "parking_lot.h"
@@ -133,9 +135,6 @@ private:
     std::vector<pthread_t> _workers;
     std::vector<unsigned> _cpus;
     std::atomic<int> _next_worker_id;
-
-    std::atomic<int64_t> _nworkers{0};
-    std::atomic<int64_t> _nbthreads{0};
 
     bool _enable_priority_queue;
     std::vector<WorkStealingQueue<bthread_t>> _priority_queues;

@@ -33,12 +33,6 @@ namespace fast {
 extern void print_task(std::ostream& os, bthread_t tid, bool enable_trace,
                        bool ignore_not_matched = false);
 
-
-
-
-
-
-
 static bool never_set_bthread_concurrency = true;
 
 BAIDU_CASSERT(sizeof(TaskControl*) == sizeof(std::atomic<TaskControl*>), atomic_size_match);

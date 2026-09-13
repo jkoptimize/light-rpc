@@ -19,6 +19,7 @@
 
 
 #include "inc/fast_log.h"
+#include <pthread.h>                       // pthread_self (Linux thread identity)
 #include <queue>                           // heap functions
 #include "butil/scoped_lock.h"
 #include "butil/third_party/murmurhash3/murmurhash3.h"   // fmix64
@@ -116,7 +117,7 @@ inline bool task_greater(const TimerThread::Task* a, const TimerThread::Task* b)
 }
 
 void* TimerThread::run_this(void* arg) {
-    fast::butil::PlatformThread::SetNameSimple("brpc_timer");
+    pthread_setname_np(pthread_self(), "brpc_timer");
     static_cast<TimerThread*>(arg)->run();
     return NULL;
 }
@@ -222,7 +223,7 @@ TimerThread::TaskId TimerThread::schedule(
     }
     // Hashing by pthread id is better for cache locality.
     const Bucket::ScheduleResult result = 
-        _buckets[fast::butil::fmix64(pthread_numeric_id()) % _options.num_buckets]
+        _buckets[fast::butil::fmix64(pthread_self()) % _options.num_buckets]
         .schedule(fn, arg, abstime);
     if (result.earlier) {
         bool earlier = false;

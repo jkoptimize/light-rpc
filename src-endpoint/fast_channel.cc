@@ -125,7 +125,7 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
                 std::lock_guard<std::mutex> lock(pending_mutex_);
                 pending_map_.erase(rpc_id);
             }
-            LOG_ERR("CallMethod: StartWrite failed, rpc_id=%u", rpc_id);
+            PLOG(ERROR) << "CallMethod: StartWrite failed, rpc_id=" << rpc_id;
             if (controller) controller->SetFailed("StartWrite failed");
             return;
         }
@@ -138,7 +138,7 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
                                       [&pending] { return pending.done; });
         if (!ok) {
             pending.timed_out = true;
-            LOG_ERR("CallMethod timeout, rpc_id=%u", rpc_id);
+            PLOG(ERROR) << "CallMethod timeout, rpc_id=" << rpc_id;
             if (controller) controller->SetFailed("RPC timeout");
         }
     }
@@ -229,7 +229,7 @@ int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
 
         IOBuf* large_frame = self->endpoint_->GetLargeFrame(rpc_id);
         if (large_frame == nullptr) {
-            LOG_ERR("OnProcessResponse: GetLargeFrame failed for rpc_id=%u", rpc_id);
+            PLOG(ERROR) << "OnProcessResponse: GetLargeFrame failed for rpc_id=" << rpc_id;
             return -1;
         }
         if (self->endpoint_->CutSegFromIOBuf(large_frame, rkey, remote_addr, rkey, rpc_id) < 0) {
@@ -254,14 +254,14 @@ int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
     std::lock_guard<std::mutex> lock(self->pending_mutex_);
     auto it = self->pending_map_.find(rpc_id);
     if (it == self->pending_map_.end()) {
-        LOG_ERR("OnProcessResponse: unknown rpc_id=%u", rpc_id);
+        PLOG(ERROR) << "OnProcessResponse: unknown rpc_id=" << rpc_id;
         return -1;
     }
     PendingRequest* pending = it->second;
 
     // Validate frame boundary.
     if (attachment_size > frame.length()) {
-        LOG_ERR("OnProcessResponse: frame overflow, rpc_id=%u", rpc_id);
+        PLOG(ERROR) << "OnProcessResponse: frame overflow, rpc_id=" << rpc_id;
         pending->error_code = ErrorCode::ERR_BAD_RESPONSE;
         pending->done = true;
         pending->cv.notify_one();
@@ -281,7 +281,7 @@ int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
     {
         IOBufAsZeroCopyInputStream zcis(frame);
         if (!pending->response->ParseFromZeroCopyStream(&zcis)) {
-            LOG_ERR("OnProcessResponse: failed to parse response, rpc_id=%u", rpc_id);
+            PLOG(ERROR) << "OnProcessResponse: failed to parse response, rpc_id=" << rpc_id;
             pending->error_code = ErrorCode::ERR_BAD_RESPONSE;
             pending->done = true;
             pending->cv.notify_one();

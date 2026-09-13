@@ -26,7 +26,7 @@
 #define FAST_BUTIL_BOUNDED_QUEUE_H
 
 #include "macros.h"
-#include <cassert>   // assert (replaces butil DCHECK)
+#include "inc/fast_log.h"
 #include <stdlib.h>  // malloc, free
 
 namespace fast {
@@ -66,7 +66,7 @@ public:
         , _start(0)
         , _ownership(ownership)
         , _items(mem) {
-        assert(_items);
+        DCHECK(_items);
     };
     
     // Construct a queue with the given capacity.
@@ -78,7 +78,7 @@ public:
         , _start(0)
         , _ownership(OWNS_STORAGE)
         , _items(malloc(capacity * sizeof(T))) {
-        assert(_items);
+        DCHECK(_items);
     };
     
     BoundedQueue()
