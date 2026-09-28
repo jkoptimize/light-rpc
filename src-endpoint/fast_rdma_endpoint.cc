@@ -207,7 +207,7 @@ bool FastRdmaEndpoint::IsWritable() const {
 void FastRdmaEndpoint::WaitForWritable() {
     std::unique_lock<std::mutex> lock(send_mutex_);
     send_cv_.wait(lock, [this] {
-        return IsWritable() || _stop.load(std::memory_order_relaxed);
+        return IsWritable() || !_stop.load(std::memory_order_relaxed);
     });
 }
 
