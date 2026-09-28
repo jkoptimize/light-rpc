@@ -3,6 +3,7 @@
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <thread>
 
@@ -1063,14 +1064,21 @@ void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
 
 void FastRdmaEndpoint::OnCompChannelEvent(void* user_data, uint32_t /*events*/) {
     auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
-    if (ep->_stop.load(std::memory_order_relaxed)) return;
     // Only start a new PollCq thread if no thread is already running.
-    if (ep->_nevent.fetch_add(1, std::memory_order_acquire) == 0) {
+    if (ep->AddReadEvent()) {
         ep->_running_threads.fetch_add(1, std::memory_order_relaxed);
-        std::thread t([](FastRdmaEndpoint* e) {
-            PollCq(e);
-            e->_running_threads.fetch_sub(1, std::memory_order_relaxed);
-        }, ep);
+        std::thread t;
+        try {
+            t = std::thread([](FastRdmaEndpoint* e) {
+                PollCq(e);
+                e->_running_threads.fetch_sub(1, std::memory_order_relaxed);
+            }, ep);
+        } catch (const std::exception& error) {
+            ep->StopCqPolling();
+            LOG(ERROR) << "Fail to start CQ polling thread: " << error.what();
+            ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
+            return;
+        }
         t.detach();
     }
 }
@@ -1078,7 +1086,10 @@ void FastRdmaEndpoint::OnCompChannelEvent(void* user_data, uint32_t /*events*/) 
 void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
     if (ep->_stop.load(std::memory_order_relaxed)) return;
 
-    if (ep->GetAndAckEvents() < 0) return;
+    if (ep->GetAndAckEvents() < 0) {
+        ep->StopCqPolling();
+        return;
+    }
 
     // CQ order: recv_cq → data_recv_cq → send_cq → data_send_cq.
     // Per brpc semantics: stay on the same CQ while it has data;
@@ -1093,7 +1104,11 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
         if (ep->_stop.load(std::memory_order_relaxed)) return;
 
         int cnt = ibv_poll_cq(cqs[phase], 32, wc);
-        if (cnt < 0) return;
+        if (cnt < 0) {
+            LOG(ERROR) << "Fail to poll CQ, phase=" << phase << ", result=" << cnt;
+            ep->StopCqPolling();
+            return;
+        }
 
         if (cnt == 0) {
             if (phase < 3) {
@@ -1111,7 +1126,10 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
             }
             // Still empty after arm — check for new events.
             if (!ep->MoreReadEvents(&progress)) break;
-            if (ep->GetAndAckEvents() < 0) return;
+            if (ep->GetAndAckEvents() < 0) {
+                ep->StopCqPolling();
+                return;
+            }
             phase = 0;
             notified = false;
             continue;
@@ -1184,9 +1202,26 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
     }
 }
 
+bool FastRdmaEndpoint::AddReadEvent() {
+    if (_stop.load(std::memory_order_acquire)) return false;
+    return _nevent.fetch_add(1, std::memory_order_acq_rel) == 0;
+}
+
 bool FastRdmaEndpoint::MoreReadEvents(int* progress) {
-    return _nevent.compare_exchange_strong(*progress, 0, std::memory_order_release,
+    // A failed CAS updates progress: new events belong to this consumer.
+    // A successful CAS releases ownership; do not access CQ state afterwards.
+    return !_nevent.compare_exchange_strong(*progress, 0, std::memory_order_release,
         std::memory_order_acquire);
+}
+
+void FastRdmaEndpoint::StopCqPolling() {
+    // Keep _nevent occupied on failure, including for a callback that already
+    // passed the stop check. Resource reclamation belongs to the shutdown path.
+    {
+        std::lock_guard<std::mutex> lock(send_mutex_);
+        _stop.store(true, std::memory_order_release);
+    }
+    send_cv_.notify_all();
 }
 
 ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {

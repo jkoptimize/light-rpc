@@ -158,12 +158,17 @@ public:
     int  TestSendAck(int num) { return SendAck(num); }
 
 private:
+    // For unit tests only: exercise event ownership without RDMA resources.
+    friend class FastRdmaEndpointEventTestPeer;
+
     int SendAck(int num);
     int SendImm(uint32_t imm);
     int DoPostRecv(void* block, size_t block_size);
     static int ReadFromFd(int fd, void* data, size_t len);
     static int WriteToFd(int fd, const void* data, size_t len);
+    bool AddReadEvent();
     bool MoreReadEvents(int* progress);
+    void StopCqPolling();
 
     // ---- Write queue (ref brpc Socket::StartWrite / KeepWrite / IsWriteComplete) ----
     struct WriteRequest {

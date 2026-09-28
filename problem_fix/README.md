@@ -4,4 +4,4 @@
 
 | 文档 | 范围 | 状态 |
 |---|---|---|
-| [RDMA endpoint 并发问题与修复计划](rdma-endpoint-concurrency.md) | 事件分发、CQ 处理、发送队列、等待唤醒、资源生命周期 | 已完成静态分析与方案整理，待确认实施 |
+| [RDMA endpoint 并发问题与修复计划](rdma-endpoint-concurrency.md) | 事件分发、CQ 处理、发送队列、等待唤醒、资源生命周期 | 按编号逐项修复；R01 已实现并通过纯逻辑回归，其余待修复 |
