@@ -1,9 +1,9 @@
 # RDMA endpoint 并发问题与修复计划
 
 > 创建日期：2026-09-27；更新日期：2026-09-28。
-> 状态：用户已要求按编号、每次一个问题实施。R01 已实现，验证与边界见第 7 节；R02～R08、O01 尚未实施。
+> 状态：用户已要求按编号、每次一个问题实施。R01、R02 已实现，验证与边界见第 7 节；R03～R08、O01 尚未实施。
 > 分析对象：当前工作区的 `src-endpoint/fast_rdma_endpoint.cc` 及相关头文件、事件分发与 channel/server 生命周期。
-> 证据范围：静态源码审查、并发时序推演及 R01 纯逻辑回归；尚未通过 RDMA 实机验证，不代表已完成全部线程安全审计。
+> 证据范围：静态源码审查、并发时序推演、R01 纯逻辑及 R02 Linux fd 回归；尚未通过 RDMA 实机验证，不代表已完成全部线程安全审计。
 
 ## 1. 结论与范围
 
@@ -46,7 +46,7 @@ P0：可能破坏内存安全、并发所有权或基本进展。P1：特定时�
 | R07 | P1 | 批量 ACK 尾数未在销毁前处理 | `ibv_destroy_cq` 可能一直等待 |
 | R08 | P1 | 条件变量的条件更新未与等待建立完整同步 | 可写状态已恢复，发送线程仍永久等待 |
 | O01 | 优化项 | 每次新一轮处理创建 detached pthread | 线程创建、调度和缓存开销，尚无量化结论 |
-l
+
 ### R01：读事件所有权协议错误
 
 状态：2026-09-28 已修复事件交接和已识别错误返回的停止处理，纯逻辑验证已完成；统一资源回收仍属于 R04，详见第 7 节。
@@ -68,9 +68,11 @@ l
 
 ### R02：非阻塞前提缺失
 
-位置：`AllocateResources`、`GetAndAckEvents`，当前约第 378、924 行。
+状态：2026-09-28 已补齐非阻塞设置、事件获取的 EINTR 处理和初始化失败回滚；编译及普通 Linux fd 测试通过，RDMA 实机待验证。
 
-completion channel 创建后直接注册 `EPOLLIN | EPOLLET`，但未设置 `O_NONBLOCK`。获取事件的循环却假定最终返回 `EAGAIN`。默认阻塞行为下，现有通知取完后会等待新通知，且此时尚未进入后面的 CQ 轮询和重新开启通知流程。
+位置：`AllocateResources`、`GetAndAckEvents`，发现问题时约第 378、924 行。
+
+修复前 completion channel 创建后直接注册 `EPOLLIN | EPOLLET`，但未设置 `O_NONBLOCK`。获取事件的循环却假定最终返回 `EAGAIN`。默认阻塞行为下，现有通知取完后会等待新通知，且此时尚未进入后面的 CQ 轮询和重新开启通知流程。
 
 方案：注册前以 `F_GETFL` 获取原 flags，再设置 `flags | O_NONBLOCK`，检查所有返回值；`EINTR` 重试，`EAGAIN` 结束本轮获取，其他错误进入统一失败处理。初始化失败必须回滚已创建的资源和事件注册。
 
@@ -208,7 +210,7 @@ recv_cq 的既有 CQE 没有被处理
 
 ## 4. 分阶段实施计划
 
-以下为最初的阶段划分。2026-09-28 起按用户要求改为每次处理一个问题编号；依赖检查与最终集成验收要求仍保留。R01 已实施，其余问题待逐项处理。
+以下为最初的阶段划分。2026-09-28 起按用户要求改为每次处理一个问题编号；依赖检查与最终集成验收要求仍保留。R01、R02 已实施，其余问题待逐项处理。
 
 | 阶段 | 工作项 | 交付与验收 |
 |---|---|---|
@@ -281,6 +283,7 @@ ctest --test-dir /tmp/light-rpc-endpoint-release --output-on-failure
 |---|---|---|
 | 2026-09-27 | 建立问题清单、整体方案及阶段计划；未修改运行时代码 | 静态审查；编译、回归及 RDMA 实机验证留待实施阶段 |
 | 2026-09-28 | R01：恢复事件交接、补齐 CQ 读取/轮询失败的停止状态及线程创建异常处理 | 6 个纯逻辑测试通过；Debug/Release 全量构建及 CTest 通过；RDMA 实机待验证 |
+| 2026-09-28 | R02：completion channel 非阻塞设置、EINTR 重试、初始化错误检查与回滚 | 新增 4 个 Linux fd 测试；Debug/Release 全量构建及 CTest 通过；RDMA 实机待验证 |
 
 ### 7.1 R01 修复内容
 
@@ -311,3 +314,29 @@ ctest --test-dir /tmp/light-rpc-endpoint-release --output-on-failure
 验证边界：尚未注入真实的 pthread 创建失败，也没有调用 verbs 复现 CQ 错误；相关分支通过源码审查确认接入停止处理。RDMA 实机验证留待依赖问题修复后进行。
 
 `StopCqPolling` 只关闭后续 CQ 调度并设置停止状态，不等价于 brpc 完整 `SetFailed`：拒绝所有新请求、通知全部未决 RPC、注销并同步在途回调、安全回收资源，仍依赖 R03/R04 等后续修复。线程创建失败在当前 std::thread 适配下进入停止状态，不在 EDISP 上同步执行可能阻塞的 PollCq。不能据此宣称 endpoint 已完成完整故障恢复或线程安全验收。
+
+### 7.3 R02 修复内容
+
+本轮修改前 HEAD：`7689a40`。对照 brpc 同一版本的 `rdma_endpoint.cpp::AllocateQpCq`、`butil/fd_utility.cpp::make_non_blocking` 以及 libibverbs 接口文档。
+
+- completion channel 创建后立即调用私有 `SetNonBlocking`，成功后才创建 CQ/QP。该函数保留原版 `F_GETFL → 检查 O_NONBLOCK → F_SETFL(flags | O_NONBLOCK)` 实现语义，保留其他状态位，失败返回原错误。
+- `GetAndAckEvents` 遇到 `EINTR` 重试，`EAGAIN` 结束通知获取；其他错误保留 errno 返回，由 R01 的调用方进入停止处理。正常的批量 ACK 阈值不变。
+- `AllocateResources` 检查 channel、四个 CQ、两个 QP 的创建结果；原先局部创建辅助函数中的进程级 CHECK 改为向调用方返回失败，符合 brpc 资源申请路径的错误处理方式。
+- 检查首次开启通知和事件注册的结果；首次通知错误码按 `ibv_req_notify_cq` 的返回约定传递，缓冲区分配失败返回 ENOMEM。
+- 复用现有 `MakeScopeGuard`，在初始化失败时清理已创建资源，并在需要时撤销事件注册尝试；保存和恢复 errno，避免日志、注销及清理覆盖原始错误。注册成功后直接撤销回滚守卫并返回，不再执行其他初始化步骤。
+- 两个握手入口已经检查 `AllocateResources() < 0`，本次保持错误向上传递。握手失败之后的 owner 通知、线程退出和 endpoint 回收仍由 R04 处理。
+
+回滚适用范围：尚未完成握手、QP 仍为 RESET、尚未投递 WR 的初始化阶段。复用的资源清理按 QP → 关联 CQ → completion channel 处理依赖，不将此回滚用作正在收发数据的 endpoint 关闭方案。运行期间四 CQ 的通知复查属于 R06，事件 ACK 尾数属于 R07，事件上下文的并发回收属于 R04/R05。
+
+### 7.4 R02 验证与限制
+
+新增 [test_rdma_channel_fd.cc](../test/unit/test_rdma_channel_fd.cc)，通过 friend 测试入口调用生产 `SetNonBlocking`，不创建或模拟 RDMA 资源：
+
+1. 保留原有 `O_APPEND`、访问模式和 `FD_CLOEXEC`，重复设置保持不变。
+2. 普通 socketpair 上无数据及已有数据被取完后，读取返回 EAGAIN，不阻塞等待下一条数据。
+3. 无效 fd 在 F_GETFL 阶段返回 EBADF。
+4. Linux O_PATH fd 允许 F_GETFL，但 F_SETFL 失败时错误正确返回，原 flags 不被修改。
+
+Debug/Release 均重新配置并完成全量构建，分别通过 86 项单元测试及三种日志模式各 13 项测试；包含 R01 的全部交接回归。构建目录继续使用 `/tmp/light-rpc-errno-build`、`/tmp/light-rpc-errno-release-build`。
+
+当前环境不存在 `/sys/class/infiniband`，未执行 RDMA 实机验证。受 `CLAUDE.md` 的 RDMA 单元测试约束，本轮未为 `ibv_*` 调用编写 mock 测试；CQ 通知获取中的 EINTR、资源申请失败回滚、初次通知与 epoll 注册失败路径已完成源码检查，实际硬件故障注入仍待验证。不能将普通 fd 测试等同于整个 CQ 处理链路通过验收。

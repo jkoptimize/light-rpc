@@ -2,9 +2,11 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <unistd.h>
+#include <cerrno>
 #include <cstring>
 #include <exception>
 #include <mutex>
+#include <new>
 #include <thread>
 
 #include "event_dispatcher.h"
@@ -13,6 +15,7 @@
 #include "fast_log.h"
 #include "fast_rdma_endpoint.h"
 #include "fast_server.h"
+#include "fast_utils.h"
 
 namespace fast {
 
@@ -29,9 +32,7 @@ static uint32_t     g_rdma_zerocopy_min_size = 512;
 
 namespace {
 ibv_cq* CreateCq(int size, ibv_comp_channel* ch) {
-  ibv_cq* cq = ibv_create_cq(g_ctx, size, nullptr, ch, 0);
-  CHECK(cq != nullptr);
-  return cq;
+  return ibv_create_cq(g_ctx, size, nullptr, ch, 0);
 }
 
 ibv_qp* CreateQp(ibv_cq* send_cq, ibv_cq* recv_cq,
@@ -45,9 +46,7 @@ ibv_qp* CreateQp(ibv_cq* send_cq, ibv_cq* recv_cq,
   attr.cap.max_recv_wr  = max_recv_wr;
   attr.cap.max_send_sge = max_send_sge;
   attr.cap.max_recv_sge = max_recv_sge;
-  ibv_qp* qp = ibv_create_qp(g_pd, &attr);
-  CHECK(qp != nullptr);
-  return qp;
+  return ibv_create_qp(g_pd, &attr);
 }
 }  // namespace
 
@@ -376,31 +375,97 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd)
 // RDMA resource management
 // ---------------------------------------------------------------------------
 
+int FastRdmaEndpoint::SetNonBlocking(int fd) {
+    // Same flag-preserving setup as brpc's butil::make_non_blocking.
+    const int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return flags;
+    if (flags & O_NONBLOCK) return 0;
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
 int FastRdmaEndpoint::AllocateResources() {
+    CHECK(comp_channel_ == nullptr);
+    EventDispatcher* dispatcher = nullptr;
+    // These QPs are still in RESET, with no posted work or CQ consumer.
+    // This rollback only applies to initialization, not to an active endpoint.
+    auto rollback = MakeScopeGuard([&] {
+        const int saved_errno = errno;
+        if (dispatcher != nullptr && comp_channel_ != nullptr) {
+            dispatcher->UnregisterEvent(comp_channel_->fd);
+        }
+        DeallocateResources();
+        errno = saved_errno;
+    });
+    const auto fail = [](const char* message) {
+        const int saved_errno = errno;
+        PLOG(ERROR) << message;
+        errno = saved_errno;
+        return -1;
+    };
+
     comp_channel_ = ibv_create_comp_channel(g_ctx);
-    CHECK(comp_channel_ != nullptr);
+    if (comp_channel_ == nullptr) {
+        return fail("Fail to create completion channel");
+    }
+    if (SetNonBlocking(comp_channel_->fd) < 0) {
+        return fail("Fail to set completion channel nonblocking");
+    }
 
     send_cq_      = CreateCq(sq_size_, comp_channel_);
+    if (send_cq_ == nullptr) {
+        return fail("Fail to create control send CQ");
+    }
     recv_cq_      = CreateCq(rq_size_, comp_channel_);
+    if (recv_cq_ == nullptr) {
+        return fail("Fail to create control recv CQ");
+    }
     data_send_cq_ = CreateCq(kDataQpDepth, comp_channel_);
+    if (data_send_cq_ == nullptr) {
+        return fail("Fail to create data send CQ");
+    }
     data_recv_cq_ = CreateCq(kDataQpDepth, comp_channel_);
+    if (data_recv_cq_ == nullptr) {
+        return fail("Fail to create data recv CQ");
+    }
 
     qp_      = CreateQp(send_cq_, recv_cq_, sq_size_, rq_size_, g_rdma_max_sge, 1);
+    if (qp_ == nullptr) {
+        return fail("Fail to create control QP");
+    }
     data_qp_ = CreateQp(data_send_cq_, data_recv_cq_, kDataQpDepth, kDataQpDepth, g_rdma_max_sge, 1);
+    if (data_qp_ == nullptr) {
+        return fail("Fail to create data QP");
+    }
 
-    sbuf_.resize(sq_size_ - RESERVED_WR_NUM);
-    rbuf_.resize(rq_size_);
-    rbuf_data_.resize(rq_size_, nullptr);
+    try {
+        sbuf_.resize(sq_size_ - RESERVED_WR_NUM);
+        rbuf_.resize(rq_size_);
+        rbuf_data_.resize(rq_size_, nullptr);
+    } catch (const std::bad_alloc&) {
+        errno = ENOMEM;
+        return fail("Fail to allocate endpoint buffer rings");
+    }
 
-    ibv_req_notify_cq(send_cq_, 0);
-    ibv_req_notify_cq(recv_cq_, 1);
-    ibv_req_notify_cq(data_send_cq_, 0);
-    ibv_req_notify_cq(data_recv_cq_, 1);
+    ibv_cq* cqs[] = {send_cq_, recv_cq_, data_send_cq_, data_recv_cq_};
+    for (int i = 0; i < 4; ++i) {
+        const int rc = ibv_req_notify_cq(cqs[i], i % 2);
+        if (rc != 0) {
+            // Unlike ibv_get_cq_event, this API returns the error code itself.
+            errno = rc;
+            PLOG(ERROR) << "Fail to arm completion notification, CQ index=" << i;
+            errno = rc;
+            return -1;
+        }
+    }
 
-    // Register comp_channel fd with global EventDispatcher
-    EventDispatcher::GetInstance().RegisterEvent(
-        comp_channel_->fd, OnCompChannelEvent, nullptr, this, EPOLLIN | EPOLLET);
+    // Publish only after nonblocking setup and resource initialization succeed.
+    dispatcher = &EventDispatcher::GetInstance();
+    if (dispatcher->RegisterEvent(comp_channel_->fd, OnCompChannelEvent, nullptr,
+                                  this, EPOLLIN | EPOLLET) < 0) {
+        return fail("Fail to register completion channel");
+    }
 
+    rollback.dismiss();
     return 0;
 }
 
@@ -928,8 +993,11 @@ int FastRdmaEndpoint::GetAndAckEvents() {
         ibv_cq* cq = nullptr;
         void*   ctx = nullptr;
         if (ibv_get_cq_event(comp_channel_, &cq, &ctx) != 0) {
-            if (errno == EAGAIN) break;
+            const int saved_errno = errno;
+            if (saved_errno == EINTR) continue;
+            if (saved_errno == EAGAIN) break;
             PLOG(ERROR) << "Fail to get cq event";
+            errno = saved_errno;
             return -1;
         }
         if (cq == send_cq_)            ++send_cq_events;

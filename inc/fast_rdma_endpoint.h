@@ -160,12 +160,15 @@ public:
 private:
     // For unit tests only: exercise event ownership without RDMA resources.
     friend class FastRdmaEndpointEventTestPeer;
+    // For unit tests only: validate fd setup without RDMA resources.
+    friend class FastRdmaEndpointFdTestPeer;
 
     int SendAck(int num);
     int SendImm(uint32_t imm);
     int DoPostRecv(void* block, size_t block_size);
     static int ReadFromFd(int fd, void* data, size_t len);
     static int WriteToFd(int fd, const void* data, size_t len);
+    static int SetNonBlocking(int fd);
     bool AddReadEvent();
     bool MoreReadEvents(int* progress);
     void StopCqPolling();
