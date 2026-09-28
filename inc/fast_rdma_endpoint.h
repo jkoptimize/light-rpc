@@ -162,6 +162,8 @@ private:
     friend class FastRdmaEndpointEventTestPeer;
     // For unit tests only: validate fd setup without RDMA resources.
     friend class FastRdmaEndpointFdTestPeer;
+    // For unit tests only: exercise the write queue without RDMA resources.
+    friend class FastRdmaEndpointWriteTestPeer;
 
     int SendAck(int num);
     int SendImm(uint32_t imm);
@@ -175,9 +177,16 @@ private:
 
     // ---- Write queue (ref brpc Socket::StartWrite / KeepWrite / IsWriteComplete) ----
     struct WriteRequest {
+        static WriteRequest* const UNCONNECTED;
         IOBuf         data;
-        WriteRequest* next = nullptr;
+        WriteRequest* next = UNCONNECTED;
     };
+    WriteRequest* PublishWriteRequest(WriteRequest* req);
+    int WriteError() const;
+    int FailWrite(WriteRequest* req, int error);
+    void ReleaseAllFailedWriteRequests(WriteRequest* req);
+    void FailPendingWrite(int error);
+    int StartKeepWrite(WriteRequest* req);
     void KeepWrite(WriteRequest* req);
     ssize_t DoWrite(WriteRequest* req);
     bool IsWriteComplete(WriteRequest* old_head, bool singular,
@@ -231,7 +240,8 @@ private:
     // ---- Write queue ----
     std::atomic<WriteRequest*> _write_head{nullptr};
     std::atomic<bool>         _handshake_ok{false};
-    WriteRequest*             _pending_keepwrite_req{nullptr};
+    std::atomic<WriteRequest*> _pending_keepwrite_req{nullptr};
+    std::atomic<int>          _write_error{0};
     std::string               _remote_ip;
     int                       _remote_port{0};
 

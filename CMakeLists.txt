@@ -40,3 +40,11 @@ file(GLOB UNIT_TEST_SOURCES test/unit/*.cc)
 add_executable(unit_tests ${UNIT_TEST_SOURCES} ${IMPL_PROTO_SRCS})
 target_link_libraries(unit_tests fastrpc fast_bthread ${GTEST_LIBRARIES} pthread)
 add_test(NAME UnitTests COMMAND unit_tests)
+
+# Linux-only queue tests intercept sched_yield to control the UNCONNECTED
+# window deterministically. The production library has no test hooks.
+add_executable(rdma_write_queue_tests test/endpoint_write_queue_test.cc)
+target_link_libraries(rdma_write_queue_tests fastrpc ${GTEST_LIBRARIES} pthread
+                      "-Wl,--wrap=sched_yield")
+add_test(NAME RdmaWriteQueueTests COMMAND rdma_write_queue_tests)
+set_tests_properties(RdmaWriteQueueTests PROPERTIES TIMEOUT 30)

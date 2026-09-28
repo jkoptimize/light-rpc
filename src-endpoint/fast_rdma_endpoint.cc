@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <sys/epoll.h>
+#include <sched.h>
 #include <unistd.h>
 #include <cerrno>
 #include <cstring>
@@ -8,6 +9,7 @@
 #include <mutex>
 #include <new>
 #include <thread>
+#include <system_error>
 
 #include "event_dispatcher.h"
 #include "fast_block_pool.h"
@@ -800,55 +802,127 @@ ssize_t FastRdmaEndpoint::CutFromIOBufList(IOBuf** from, size_t ndata) {
 // Write queue — ref brpc Socket::StartWrite / KeepWrite / IsWriteComplete
 // ============================================================
 
-int FastRdmaEndpoint::StartWrite(IOBuf&& data) {
-    auto* req = new WriteRequest;
-    req->data = std::move(data);
+FastRdmaEndpoint::WriteRequest* const FastRdmaEndpoint::WriteRequest::UNCONNECTED =
+    reinterpret_cast<WriteRequest*>(static_cast<intptr_t>(-1));
 
-    WriteRequest* prev = _write_head.exchange(req, std::memory_order_release);
+FastRdmaEndpoint::WriteRequest* FastRdmaEndpoint::PublishWriteRequest(WriteRequest* req) {
+    // Match brpc: publish initialized request fields to IsWriteComplete's acquire.
+    return _write_head.exchange(req, std::memory_order_release);
+}
+
+int FastRdmaEndpoint::WriteError() const {
+    if (!_stop.load(std::memory_order_acquire)) return 0;
+    const int error = _write_error.load(std::memory_order_relaxed);
+    return error != 0 ? error : ECANCELED;
+}
+
+int FastRdmaEndpoint::StartWrite(IOBuf&& data) {
+    if (const int error = WriteError()) {
+        errno = error;
+        return -1;
+    }
+    auto* req = new (std::nothrow) WriteRequest;
+    if (req == nullptr) {
+        errno = ENOMEM;
+        return -1;
+    }
+    req->data.swap(data);
+
+    WriteRequest* prev = PublishWriteRequest(req);
     if (prev != nullptr) {
+        // The consumer may already be waiting on UNCONNECTED. Do not touch
+        // req after publishing the link: the consumer may immediately free it.
         req->next = prev;
         return 0;
     }
 
-    // We've got the right to write.
     req->next = nullptr;
+    // Failure can race with the initial check and queue publication.
+    if (const int error = WriteError()) return FailWrite(req, error);
 
-    // Not handshake-done yet — start async connect, req stays in queue.
-    // _pending_keepwrite_req != nullptr already guards against duplicate connects.
     if (!_handshake_ok.load(std::memory_order_acquire)) {
-        _pending_keepwrite_req = req;
-        if (StartAsyncConnect() < 0) {
-            delete req;
-            _pending_keepwrite_req = nullptr;
-            _write_head.store(nullptr, std::memory_order_release);
+        _pending_keepwrite_req.store(req, std::memory_order_release);
+        int rc = -1;
+        try {
+            rc = StartAsyncConnect();
+        } catch (const std::system_error& e) {
+            errno = e.code().value();
+        } catch (const std::bad_alloc&) {
+            errno = ENOMEM;
+        }
+        if (rc < 0) {
+            const int saved_errno = errno;
+            FailPendingWrite(saved_errno);
+            errno = saved_errno;
             return -1;
         }
         return 0;
     }
 
-    // Try inline write in the calling thread.
     IOBuf* data_arr[1] = { &req->data };
-    ssize_t nw = CutFromIOBufList(data_arr, 1);
-    if (nw < 0) {
-        if (errno != EAGAIN) {
-            delete req;
-            _write_head.store(nullptr, std::memory_order_release);
-            return -1;
-        }
-    }
+    const ssize_t nw = CutFromIOBufList(data_arr, 1);
+    if (nw < 0 && errno != EAGAIN) return FailWrite(req, errno);
 
     if (IsWriteComplete(req, true, nullptr)) {
         delete req;
         return 0;
     }
+    return StartKeepWrite(req);
+}
 
-    // Not complete — spawn KeepWrite thread.
+int FastRdmaEndpoint::StartKeepWrite(WriteRequest* req) {
     _running_threads.fetch_add(1, std::memory_order_relaxed);
-    std::thread([this, req]() {
-        KeepWrite(req);
+    std::thread worker;
+    int error = 0;
+    try {
+        worker = std::thread([this, req]() {
+            KeepWrite(req);
+            _running_threads.fetch_sub(1, std::memory_order_relaxed);
+        });
+    } catch (const std::system_error& e) {
+        error = e.code().value();
+        LOG(ERROR) << "Fail to start KeepWrite: " << e.what();
+    } catch (const std::bad_alloc&) {
+        error = ENOMEM;
+    }
+    if (error != 0) {
+        const int rc = FailWrite(req, error);
         _running_threads.fetch_sub(1, std::memory_order_relaxed);
-    }).detach();
+        return rc;
+    }
+    worker.detach();
     return 0;
+}
+
+int FastRdmaEndpoint::FailWrite(WriteRequest* req, int error) {
+    if (error == 0) error = EIO;
+    int expected = 0;
+    _write_error.compare_exchange_strong(expected, error, std::memory_order_relaxed);
+    // Reject subsequent writes before releasing any request or ownership.
+    StopCqPolling();
+    ReleaseAllFailedWriteRequests(req);
+    errno = _write_error.load(std::memory_order_relaxed);
+    return -1;
+}
+
+void FastRdmaEndpoint::FailPendingWrite(int error) {
+    WriteRequest* req = _pending_keepwrite_req.exchange(nullptr, std::memory_order_acq_rel);
+    if (req != nullptr) FailWrite(req, error);
+}
+
+void FastRdmaEndpoint::ReleaseAllFailedWriteRequests(WriteRequest* req) {
+    // Same drain protocol as brpc: keep the last node until IsWriteComplete
+    // collects concurrent publications or atomically releases the write right.
+    do {
+        WriteRequest* next;
+        while ((next = req->next) != nullptr) {
+            WriteRequest* done = req;
+            req = next;
+            delete done;
+        }
+        req->data.clear();
+    } while (!IsWriteComplete(req, true, nullptr));
+    delete req;
 }
 
 ssize_t FastRdmaEndpoint::DoWrite(WriteRequest* req) {
@@ -865,7 +939,7 @@ ssize_t FastRdmaEndpoint::DoWrite(WriteRequest* req) {
 bool FastRdmaEndpoint::IsWriteComplete(WriteRequest* old_head,
                                         bool singular_node,
                                         WriteRequest** new_tail) {
-    // old_head->next must be NULL.
+    CHECK(old_head->next == nullptr);
     WriteRequest* new_head = old_head;
     WriteRequest* desired = nullptr;
     bool no_more = true;
@@ -886,10 +960,14 @@ bool FastRdmaEndpoint::IsWriteComplete(WriteRequest* old_head,
     WriteRequest* tail = nullptr;
     WriteRequest* p = new_head;
     do {
-        WriteRequest* saved = p->next;
+        while (p->next == WriteRequest::UNCONNECTED) {
+            sched_yield();
+        }
+        WriteRequest* const saved = p->next;
         p->next = tail;
         tail = p;
         p = saved;
+        CHECK(p != nullptr);
     } while (p != old_head);
 
     // Link old chain with new chain.
@@ -900,6 +978,7 @@ bool FastRdmaEndpoint::IsWriteComplete(WriteRequest* old_head,
 
 void FastRdmaEndpoint::KeepWrite(WriteRequest* req) {
     WriteRequest* cur_tail = nullptr;
+    int error = ECANCELED;
 
     do {
         if (_stop.load(std::memory_order_relaxed)) break;
@@ -913,6 +992,7 @@ void FastRdmaEndpoint::KeepWrite(WriteRequest* req) {
 
         const ssize_t nw = DoWrite(req);
         if (nw < 0 && errno != EAGAIN) {
+            error = errno;
             break;  // fatal error
         }
 
@@ -940,12 +1020,7 @@ void FastRdmaEndpoint::KeepWrite(WriteRequest* req) {
         }
     } while (true);
 
-    // Error: release all remaining requests.
-    while (req != nullptr) {
-        WriteRequest* next = req->next;
-        delete req;
-        req = next;
-    }
+    FailWrite(req, error);
 }
 
 void FastRdmaEndpoint::SetRemoteAddr(const std::string& ip, int port) {
@@ -956,26 +1031,34 @@ void FastRdmaEndpoint::SetRemoteAddr(const std::string& ip, int port) {
 int FastRdmaEndpoint::StartAsyncConnect() {
     sockaddr_in addr = {};
     addr.sin_family = AF_INET;
-    addr.sin_port   = htons(static_cast<uint16_t>(_remote_port));
-    inet_pton(AF_INET, _remote_ip.c_str(), &addr.sin_addr);
+    addr.sin_port = htons(static_cast<uint16_t>(_remote_port));
+    if (inet_pton(AF_INET, _remote_ip.c_str(), &addr.sin_addr) != 1) {
+        errno = EINVAL;
+        return -1;
+    }
 
-    int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
-    CHECK(sock_fd >= 0);
-    fcntl(sock_fd, F_SETFL, O_NONBLOCK);
-    fcntl(sock_fd, F_SETFD, FD_CLOEXEC);
-
-    int ret = connect(sock_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-    if (ret < 0 && errno != EINPROGRESS) {
+    const int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock_fd < 0) return -1;
+    auto close_on_failure = MakeScopeGuard([&] {
+        const int saved_errno = errno;
         close(sock_fd);
-        PLOG(ERROR) << "Fail to connect to " << _remote_ip << ":" << _remote_port;
+        tcp_fd_ = -1;
+        errno = saved_errno;
+    });
+    if (SetNonBlocking(sock_fd) < 0 || fcntl(sock_fd, F_SETFD, FD_CLOEXEC) < 0) {
+        return -1;
+    }
+    if (connect(sock_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0 &&
+        errno != EINPROGRESS) {
         return -1;
     }
 
     tcp_fd_ = sock_fd;
-    EventDispatcher::GetInstance().RegisterEvent(
-        sock_fd, OnClientHandshake, nullptr, this, EPOLLOUT | EPOLLET);
-    LOG(INFO) << "Async connect to " << _remote_ip << ":" << _remote_port
-              << " fd=" << sock_fd;
+    if (EventDispatcher::GetInstance().RegisterEvent(
+            sock_fd, OnClientHandshake, nullptr, this, EPOLLOUT | EPOLLET) < 0) {
+        return -1;
+    }
+    close_on_failure.dismiss();
     return 0;
 }
 
@@ -1086,44 +1169,63 @@ void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t events) {
 
 void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
     auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
-    int fd = ep->tcp_fd_;
-
+    const int fd = ep->tcp_fd_;
     EventDispatcher::GetInstance().UnregisterEvent(fd);
-    if (events & (EPOLLERR | EPOLLHUP)) {
-        close(fd);
-        PLOG(ERROR) << "Client handshake error on fd=" << fd << " (EPOLLERR/EPOLLHUP)";
-        return;
-    }
 
-    // EPOLLOUT fires for both success and failure — SO_ERROR tells the truth
+    // EPOLLOUT also reports failed connects. Every failure must return the
+    // pending writer's ownership through the same queue drain protocol.
     int so_err = 0;
     socklen_t len = sizeof(so_err);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &len) < 0 || so_err != 0) {
+    int error = 0;
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &len) < 0) {
+        error = errno;
+    } else if (so_err != 0) {
+        error = so_err;
+    } else if (events & (EPOLLERR | EPOLLHUP)) {
+        error = ECONNRESET;
+    }
+    if (error != 0) {
         close(fd);
-        PLOG(ERROR) << "Client handshake connect error on fd=" << fd << ", so_err=" << so_err;
+        ep->FailPendingWrite(error);
         return;
     }
 
     ep->_running_threads.fetch_add(1, std::memory_order_relaxed);
-    std::thread([ep, fd]() {
-        int ret = ProcessHandshakeAtClient(ep, fd);
-        close(fd);
-        if (ret == 0) {
-            // Handshake succeeded — drain pending write queue.
-            ep->_handshake_ok.store(true, std::memory_order_release);
-            WriteRequest* req = ep->_pending_keepwrite_req;
-            if (req != nullptr) {
-                ep->_running_threads.fetch_add(1, std::memory_order_relaxed);
-                std::thread([ep, req]() {
-                    ep->KeepWrite(req);
-                    ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
-                }).detach();
+    std::thread worker;
+    try {
+        worker = std::thread([ep, fd]() {
+            int ret = -1;
+            try {
+                ret = ProcessHandshakeAtClient(ep, fd);
+            } catch (const std::system_error& e) {
+                errno = e.code().value();
+            } catch (const std::bad_alloc&) {
+                errno = ENOMEM;
             }
-        } else {
-            PLOG(ERROR) << "Client handshake failed on fd=" << fd;
-        }
+            const int saved_errno = errno;
+            close(fd);
+            if (ret == 0) {
+                ep->_handshake_ok.store(true, std::memory_order_release);
+                WriteRequest* req = ep->_pending_keepwrite_req.exchange(
+                    nullptr, std::memory_order_acq_rel);
+                if (req != nullptr) ep->StartKeepWrite(req);
+            } else {
+                ep->FailPendingWrite(saved_errno);
+            }
+            ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
+        });
+    } catch (const std::system_error& e) {
+        error = e.code().value();
+    } catch (const std::bad_alloc&) {
+        error = ENOMEM;
+    }
+    if (error != 0) {
+        close(fd);
+        ep->FailPendingWrite(error);
         ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
-    }).detach();
+        return;
+    }
+    worker.detach();
 }
 
 // ============================================================
