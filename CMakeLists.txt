@@ -27,6 +27,7 @@ add_library(fastrpc STATIC ${FAST_SRC} ${IMPL_PROTO_SRCS})
 target_link_libraries(fastrpc "-libverbs -lrdmacm -lpthread" ${Boost_LIBRARIES} protobuf::libprotobuf)
 
 add_subdirectory(src-bthread)
+target_link_libraries(fastrpc fast_bthread)
 add_subdirectory(test/logging)
 
 protobuf_generate_cpp(TEST_PROTO_SRCS TEST_PROTO_HDRS test/test.proto)

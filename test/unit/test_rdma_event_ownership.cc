@@ -1,3 +1,4 @@
+#include "test/endpoint_test_owner.h"
 #include <gtest/gtest.h>
 #include <future>
 #include <thread>
@@ -21,7 +22,8 @@ namespace {
 using Peer = FastRdmaEndpointEventTestPeer;
 
 TEST(RdmaEventOwnership, DrainedConsumerReleasesOwnership) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner owner;
+    auto& ep = owner.get();
     ASSERT_TRUE(Peer::AddEvent(ep));
     int progress = Peer::InitialProgress();
     EXPECT_FALSE(Peer::MoreEvents(ep, &progress));
@@ -32,7 +34,8 @@ TEST(RdmaEventOwnership, DrainedConsumerReleasesOwnership) {
 }
 
 TEST(RdmaEventOwnership, ArrivingEventsStayWithCurrentConsumer) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner owner;
+    auto& ep = owner.get();
     ASSERT_TRUE(Peer::AddEvent(ep));
     EXPECT_FALSE(Peer::AddEvent(ep));
     EXPECT_FALSE(Peer::AddEvent(ep));
@@ -47,7 +50,8 @@ TEST(RdmaEventOwnership, ArrivingEventsStayWithCurrentConsumer) {
 }
 
 TEST(RdmaEventOwnership, EventBeforeReleaseKeepsExistingConsumer) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner owner;
+    auto& ep = owner.get();
     ASSERT_TRUE(Peer::AddEvent(ep));
     std::promise<void> event_published;
     auto published = event_published.get_future();
@@ -67,7 +71,8 @@ TEST(RdmaEventOwnership, EventBeforeReleaseKeepsExistingConsumer) {
 }
 
 TEST(RdmaEventOwnership, EventAfterReleaseStartsNextConsumer) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner owner;
+    auto& ep = owner.get();
     ASSERT_TRUE(Peer::AddEvent(ep));
     std::promise<void> ownership_released;
     auto released = ownership_released.get_future();
@@ -87,7 +92,8 @@ TEST(RdmaEventOwnership, EventAfterReleaseStartsNextConsumer) {
 }
 
 TEST(RdmaEventOwnership, PollingFailurePreventsRestart) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner owner;
+    auto& ep = owner.get();
     ASSERT_TRUE(Peer::AddEvent(ep));
     EXPECT_FALSE(Peer::AddEvent(ep));
     Peer::StopPolling(ep);
@@ -98,11 +104,12 @@ TEST(RdmaEventOwnership, PollingFailurePreventsRestart) {
 }
 
 TEST(RdmaEventOwnership, StoppedEndpointDoesNotAcquireOwnership) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner owner;
+    auto& ep = owner.get();
     Peer::StopPolling(ep);
     EXPECT_FALSE(Peer::AddEvent(ep));
     // The real callback must also return without creating a thread or using RDMA.
-    FastRdmaEndpoint::OnCompChannelEvent(&ep, 0);
+    FastRdmaEndpoint::OnCompChannelEvent(reinterpret_cast<void*>(ep.id()), 0);
 }
 
 }  // namespace

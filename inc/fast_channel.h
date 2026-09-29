@@ -17,6 +17,7 @@ class FastChannel : public google::protobuf::RpcChannel {
 public:
     FastChannel(std::string dest_ip, int dest_port);
     ~FastChannel() override;
+    void Close();
 
     void CallMethod(const google::protobuf::MethodDescriptor* method,
                     google::protobuf::RpcController* controller,
@@ -35,7 +36,16 @@ public:
 
 private:
     static int OnProcessResponse(IOBuf& frame, void* arg);
-    void WaitForLargeWritable();
+    bool WaitForLargeWritable();
+    void OnEndpointFailed(int error);
+    // For unit tests only: construct without initializing RDMA hardware.
+    friend class FastChannelLifecycleTestPeer;
+    explicit FastChannel(FastRdmaEndpoint* endpoint);
+    EndpointId endpoint_id_ = INVALID_VREF_ID;
+    std::mutex recycle_mutex_;
+    std::condition_variable recycle_cv_;
+    bool recycled_ = false;
+    std::once_flag close_once_;
 
     FastRdmaEndpoint* endpoint_;
 
@@ -52,11 +62,14 @@ private:
         std::condition_variable cv;
         google::protobuf::Message* response   = nullptr;
         bool                    done         = false;
+        int                     transport_error = 0;
         bool                    timed_out    = false;
         uint32_t                error_code   = 0;
         IOBuf                   attachment;
     };
 
+    bool RegisterPending(uint32_t rpc_id, PendingRequest* request);
+    int connection_error_ = 0;  // protected by pending_mutex_
     std::mutex pending_mutex_;
     std::unordered_map<uint32_t, PendingRequest*> pending_map_;
 };

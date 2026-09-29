@@ -9,10 +9,15 @@
 #include <infiniband/verbs.h>
 #include "fast_iobuf.h"
 #include "message_dispatcher.h"
+#include "versioned_ref_with_id.h"
+#include "event_dispatcher.h"
 
 namespace fast {
 
 class FastServer;  // forward declare
+class FastRdmaEndpoint;
+using EndpointId = VRefId;
+using EndpointUniquePtr = VersionedRefWithIdUniquePtr<FastRdmaEndpoint>;
 
 // ============================================================
 // HelloMessage — 44B TCP 带外握手消息
@@ -61,11 +66,22 @@ private:
 // FastRdmaEndpoint — per-connection RDMA endpoint
 // ============================================================
 
-class FastRdmaEndpoint {
+class FastRdmaEndpoint : public VersionedRefWithId<FastRdmaEndpoint> {
     static const int PROGRESS_INIT = 1;
 public:
-    FastRdmaEndpoint();
-    ~FastRdmaEndpoint();
+    explicit FastRdmaEndpoint(Forbidden f);
+    ~FastRdmaEndpoint() override = default;
+    // Caller must own a reference. Failure never waits for the calling worker.
+    int SetFailed(int error = ECANCELED) {
+        return VersionedRefWithId<FastRdmaEndpoint>::SetFailed(error ? error : EIO);
+    }
+    int error() const {
+        const int value = _write_error.load(std::memory_order_acquire);
+        return value ? value : (Failed() ? ECANCELED : 0);
+    }
+    // Install owner callbacks before publishing the endpoint to other threads.
+    void SetFailureHandler(std::function<void(int)> handler) { _failure_handler = std::move(handler); }
+    void SetRecycleHandler(std::function<void()> handler) { _recycle_handler = std::move(handler); }
 
     // ---- Global init (call once before any endpoint is created) ----
     static void GlobalInitialize();
@@ -158,22 +174,31 @@ public:
     int  TestSendAck(int num) { return SendAck(num); }
 
 private:
+    friend class VersionedRefWithId<FastRdmaEndpoint>;
+    int OnCreated();
+    void OnFailed(int error);
+    void BeforeRecycled();
     // For unit tests only: exercise event ownership without RDMA resources.
     friend class FastRdmaEndpointEventTestPeer;
     // For unit tests only: validate fd setup without RDMA resources.
     friend class FastRdmaEndpointFdTestPeer;
     // For unit tests only: exercise the write queue without RDMA resources.
     friend class FastRdmaEndpointWriteTestPeer;
+    // For unit tests only: exercise shutdown using ordinary Linux sockets.
+    friend class FastRdmaEndpointLifecycleTestPeer;
 
     int SendAck(int num);
     int SendImm(uint32_t imm);
     int DoPostRecv(void* block, size_t block_size);
-    static int ReadFromFd(int fd, void* data, size_t len);
-    static int WriteToFd(int fd, const void* data, size_t len);
+    int ReadFromFd(int fd, void* data, size_t len);
+    int WriteToFd(int fd, const void* data, size_t len);
     static int SetNonBlocking(int fd);
     bool AddReadEvent();
     bool MoreReadEvents(int* progress);
     void StopCqPolling();
+    void CloseTcpFd();
+    int RegisterTcpEvent(int fd, EventDispatcher::InputCallback cb, uint32_t events);
+    void UnregisterTcpEvent();
 
     // ---- Write queue (ref brpc Socket::StartWrite / KeepWrite / IsWriteComplete) ----
     struct WriteRequest {
@@ -203,7 +228,11 @@ private:
     ibv_comp_channel*  comp_channel_ = nullptr;
 
     // ---- TCP fd used during handshake ----
-    int    tcp_fd_ = -1;
+    int tcp_fd_ = -1;
+    std::mutex connection_mutex_;
+    EventDispatcher::Registration tcp_registration_ = EventDispatcher::INVALID_REGISTRATION;
+    EventDispatcher::Registration cq_registration_ = EventDispatcher::INVALID_REGISTRATION;
+    int cq_event_fd_ = -1;
 
     // ---- Server-side owner (nullptr for client) ----
     FastServer* _owner = nullptr;
@@ -276,7 +305,8 @@ public:
 private:
     // ---- Shutdown ----
     std::atomic<bool> _stop{false};
-    std::atomic<int>  _running_threads{0};
+    std::function<void(int)> _failure_handler;
+    std::function<void()> _recycle_handler;
 };
 
 }  // namespace fast

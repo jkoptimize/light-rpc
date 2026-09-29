@@ -25,6 +25,7 @@
 #include <iostream>                      // std::ostream
 #include <algorithm>                     // std::max, std::min
 #include <atomic>             // std::atomic
+#include <cstring>            // memcpy, memset
 #include <pthread.h>          // pthread_mutex_t, PTHREAD_MUTEX_INITIALIZER
 #include "macros.h"                // BAIDU_CACHELINE_ALIGNMENT
 #include "scoped_lock.h"           // BAIDU_SCOPED_LOCK

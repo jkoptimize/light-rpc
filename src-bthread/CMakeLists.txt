@@ -7,6 +7,8 @@ set(BTHREAD_SOURCES
     butil/fast_rand.cpp
     butil/thread_local.cpp
     butil/thread_key.cpp
+    butil/class_name.cpp
+    butil/string_printf.cpp
     butil/third_party/murmurhash3/murmurhash3.cpp
 )
 

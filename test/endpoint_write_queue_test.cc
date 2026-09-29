@@ -1,3 +1,4 @@
+#include "test/endpoint_test_owner.h"
 #include <gtest/gtest.h>
 #include <atomic>
 #include <cerrno>
@@ -86,7 +87,8 @@ Request* TrackedRequest(std::atomic<int>& released) {
 }
 
 TEST(RdmaWriteQueue, RetainsIncompleteDataAndReversesNewRequestsInFifoOrder) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner endpoint_owner;
+    auto& ep = endpoint_owner.get();
     std::atomic<int> released{0};
     Request* a = TrackedRequest(released);
     Request* b = TrackedRequest(released);
@@ -109,7 +111,8 @@ TEST(RdmaWriteQueue, RetainsIncompleteDataAndReversesNewRequestsInFifoOrder) {
 }
 
 TEST(RdmaWriteQueue, CompletedEpochReleasesTheWriteRight) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner endpoint_owner;
+    auto& ep = endpoint_owner.get();
     for (int i = 0; i < 2; ++i) {
         auto* req = new Request;
         EXPECT_EQ(nullptr, Peer::Enqueue(ep, req));
@@ -120,7 +123,8 @@ TEST(RdmaWriteQueue, CompletedEpochReleasesTheWriteRight) {
 }
 
 TEST(RdmaWriteQueue, ConsumerWaitsForPublishedNodeToBeConnected) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner endpoint_owner;
+    auto& ep = endpoint_owner.get();
     std::atomic<int> released{0};
     Request* a = TrackedRequest(released);
     Request* b = TrackedRequest(released);
@@ -149,7 +153,8 @@ TEST(RdmaWriteQueue, ConsumerWaitsForPublishedNodeToBeConnected) {
 }
 
 TEST(RdmaWriteQueue, FailureDrainsBothUnconnectedAndLaterPublishedNodes) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner endpoint_owner;
+    auto& ep = endpoint_owner.get();
     std::atomic<int> released{0};
     Request* a = TrackedRequest(released);
     Request* b = TrackedRequest(released);
@@ -178,7 +183,8 @@ TEST(RdmaWriteQueue, FailureDrainsBothUnconnectedAndLaterPublishedNodes) {
 }
 
 TEST(RdmaWriteQueue, LatePublisherAfterFailureDrainsItsOwnEpoch) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner endpoint_owner;
+    auto& ep = endpoint_owner.get();
     std::atomic<int> released{0};
     Request* a = TrackedRequest(released);
     Peer::Enqueue(ep, a);
@@ -194,7 +200,8 @@ TEST(RdmaWriteQueue, LatePublisherAfterFailureDrainsItsOwnEpoch) {
 }
 
 TEST(RdmaWriteQueue, PendingHandshakeFailureDrainsExactlyOnce) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner endpoint_owner;
+    auto& ep = endpoint_owner.get();
     std::atomic<int> released{0};
     Request* a = TrackedRequest(released);
     Request* b = TrackedRequest(released);
@@ -210,7 +217,8 @@ TEST(RdmaWriteQueue, PendingHandshakeFailureDrainsExactlyOnce) {
 }
 
 TEST(RdmaWriteQueue, SynchronousConnectFailureReleasesTheRealStartWriteRequest) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner endpoint_owner;
+    auto& ep = endpoint_owner.get();
     ep.SetRemoteAddr("invalid-address", 1);
     std::atomic<int> released{0};
     IOBuf data = TrackedData(released);
@@ -223,7 +231,8 @@ TEST(RdmaWriteQueue, SynchronousConnectFailureReleasesTheRealStartWriteRequest) 
 }
 
 TEST(RdmaWriteQueue, ConcurrentSubmissionsDuringFailureReleaseEveryBufferOnce) {
-    FastRdmaEndpoint ep;
+    EndpointTestOwner endpoint_owner;
+    auto& ep = endpoint_owner.get();
     std::atomic<int> released{0};
     Request* owner = TrackedRequest(released);
     Peer::Enqueue(ep, owner);

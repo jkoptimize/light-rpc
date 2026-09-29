@@ -1,3 +1,4 @@
+#include "test/endpoint_test_owner.h"
 #include <gtest/gtest.h>
 #include <arpa/inet.h>
 #include <thread>
@@ -79,7 +80,8 @@ TEST(FastRdmaEndpoint, HelloNegotiationInvalidQpSize) {
 // ============================================================
 
 TEST(FastRdmaEndpoint, FlowControlInit) {
-    fast::FastRdmaEndpoint ep;
+    fast::EndpointTestOwner owner;
+    auto& ep = owner.get();
     ep.SetNegotiatedParams(32, 32, 32, 32, 8192);
 
     EXPECT_TRUE(ep.IsWritable());
@@ -88,7 +90,8 @@ TEST(FastRdmaEndpoint, FlowControlInit) {
 }
 
 TEST(FastRdmaEndpoint, WaitForWritableBlocksAndWakes) {
-    fast::FastRdmaEndpoint ep;
+    fast::EndpointTestOwner owner;
+    auto& ep = owner.get();
     ep.SetNegotiatedParams(32, 32, 32, 32, 8192);
 
     ep.SimulateSendN(29);
@@ -114,7 +117,8 @@ TEST(FastRdmaEndpoint, WaitForWritableBlocksAndWakes) {
 }
 
 TEST(FastRdmaEndpoint, MultipleWaiters) {
-    fast::FastRdmaEndpoint ep;
+    fast::EndpointTestOwner owner;
+    auto& ep = owner.get();
     ep.SetNegotiatedParams(32, 32, 32, 32, 8192);
     ep.SimulateSendN(29);
 
@@ -140,7 +144,8 @@ TEST(FastRdmaEndpoint, MultipleWaiters) {
 }
 
 TEST(FastRdmaEndpoint, WaitConsumeBehavior) {
-    fast::FastRdmaEndpoint ep;
+    fast::EndpointTestOwner owner;
+    auto& ep = owner.get();
     ep.SetNegotiatedParams(32, 32, 32, 32, 8192);
     ep.SimulateSendN(29);
 
@@ -178,7 +183,8 @@ TEST(FastRdmaEndpoint, WaitConsumeBehavior) {
 // ============================================================
 
 TEST(FastRdmaEndpoint, SendAckBelowThreshold) {
-    fast::FastRdmaEndpoint ep;
+    fast::EndpointTestOwner owner;
+    auto& ep = owner.get();
     ep.SetNegotiatedParams(32, 32, 32, 32, 8192);
 
     EXPECT_EQ(ep.TestSendAck(10), 0);
@@ -190,7 +196,8 @@ TEST(FastRdmaEndpoint, SendAckBelowThreshold) {
 // ============================================================
 
 TEST(FastRdmaEndpoint, HandleSendCompletion) {
-    fast::FastRdmaEndpoint ep;
+    fast::EndpointTestOwner owner;
+    auto& ep = owner.get();
     ep.SetNegotiatedParams(32, 32, 32, 32, 8192);
     ep.SimulateSendN(3);
 
@@ -205,7 +212,8 @@ TEST(FastRdmaEndpoint, HandleSendCompletion) {
 }
 
 TEST(FastRdmaEndpoint, HandleImmSendCompletion) {
-    fast::FastRdmaEndpoint ep;
+    fast::EndpointTestOwner owner;
+    auto& ep = owner.get();
     ep.SetNegotiatedParams(32, 32, 32, 32, 8192);
 
     ibv_wc wc{};

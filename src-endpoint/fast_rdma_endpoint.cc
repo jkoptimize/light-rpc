@@ -144,25 +144,96 @@ bool HelloNegotiationValid(const HelloMessage& msg) {
 // FastRdmaEndpoint
 // ============================================================
 
-FastRdmaEndpoint::FastRdmaEndpoint() = default;
+FastRdmaEndpoint::FastRdmaEndpoint(Forbidden f)
+    : VersionedRefWithId<FastRdmaEndpoint>(f) {}
 
-FastRdmaEndpoint::~FastRdmaEndpoint() {
-    _stop.store(true, std::memory_order_relaxed);
+int FastRdmaEndpoint::OnCreated() {
+    _write_error.store(0, std::memory_order_relaxed);
+    _stop.store(false, std::memory_order_relaxed);
+    _handshake_ok.store(false, std::memory_order_relaxed);
+    _nevent.store(0, std::memory_order_relaxed);
+    _write_head.store(nullptr, std::memory_order_relaxed);
+    _pending_keepwrite_req.store(nullptr, std::memory_order_relaxed);
+    tcp_registration_ = cq_registration_ = EventDispatcher::INVALID_REGISTRATION;
+    tcp_fd_ = cq_event_fd_ = -1;
+    _owner = nullptr;
+    sq_size_ = rq_size_ = 128;
+    remote_recv_block_size_ = 0;
+    local_window_capacity_ = remote_window_capacity_ = 0;
+    sq_window_size_.store(0, std::memory_order_relaxed);
+    remote_rq_window_size_.store(0, std::memory_order_relaxed);
+    new_rq_wrs_.store(0, std::memory_order_relaxed);
+    sq_imm_window_size_ = RESERVED_WR_NUM;
+    sq_current_ = sq_sent_ = sq_unsignaled = rq_received_ = 0;
+    send_counter_ = sq_unsignaled_ = unsolicited_ = accumulated_ack_ = 0;
+    active_large_transfers_.store(0, std::memory_order_relaxed);
+    _remote_ip.clear();
+    _remote_port = 0;
+    _msg_dispatcher.SetMode(DispatcherMode::kServer);
+    return 0;
+}
+
+void FastRdmaEndpoint::OnFailed(int error) {
+    _write_error.store(error, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(send_mutex_);
+        _stop.store(true, std::memory_order_release);
+    }
     send_cv_.notify_all();
-
-    // Unregister comp_channel from EventDispatcher to prevent new PollCq threads.
-    if (comp_channel_ != nullptr) {
-        EventDispatcher::GetInstance().UnregisterEvent(comp_channel_->fd);
+    // Address rejects this generation already. Existing callbacks/workers keep
+    // resources alive with their references; unregister must not join them.
+    {
+        std::lock_guard<std::mutex> lock(connection_mutex_);
+        auto& dispatcher = EventDispatcher::GetInstance();
+        dispatcher.UnregisterEvent(tcp_fd_, tcp_registration_);
+        dispatcher.UnregisterEvent(cq_event_fd_, cq_registration_);
+        tcp_registration_ = cq_registration_ = EventDispatcher::INVALID_REGISTRATION;
     }
+    if (_failure_handler) _failure_handler(error);
+}
 
-    // Destroy RDMA resources first — in-flight operations will fail and
-    // cause KeepWrite / PollCq threads to exit their loops naturally.
+void FastRdmaEndpoint::BeforeRecycled() {
+    // VersionedRefWithId grants this callback only after the last CPU reference
+    // is released. No joining here: this can be the last worker itself.
+    WriteRequest* pending = _pending_keepwrite_req.exchange(nullptr, std::memory_order_relaxed);
+    if (pending) ReleaseAllFailedWriteRequests(pending);
+    CHECK(_write_head.load(std::memory_order_relaxed) == nullptr);
+    EventDispatcher::GetInstance().UnregisterEvent(tcp_fd_, tcp_registration_);
+    EventDispatcher::GetInstance().UnregisterEvent(cq_event_fd_, cq_registration_);
+    CloseTcpFd();
     DeallocateResources();
+    _msg_dispatcher.SetHandler(nullptr, nullptr);
+    _failure_handler = {};
+    _large_done_cb = {};
+    _owner = nullptr;
+    auto done = std::move(_recycle_handler);
+    _recycle_handler = {};
+    if (done) done(); // Last access to the owner, after all resources are released.
+}
 
-    // Wait for all detached threads to exit.
-    while (_running_threads.load(std::memory_order_relaxed) > 0) {
-        std::this_thread::yield();
+int FastRdmaEndpoint::RegisterTcpEvent(int fd, EventDispatcher::InputCallback cb,
+                                      uint32_t events) {
+    std::lock_guard<std::mutex> lock(connection_mutex_);
+    if (Failed()) { errno = error(); return -1; }
+    tcp_fd_ = fd;
+    return EventDispatcher::GetInstance().RegisterEvent(fd, cb, nullptr, reinterpret_cast<void*>(id()),
+                                                        events, &tcp_registration_);
+}
+
+void FastRdmaEndpoint::UnregisterTcpEvent() {
+    int fd;
+    EventDispatcher::Registration id;
+    {
+        std::lock_guard<std::mutex> lock(connection_mutex_);
+        fd = tcp_fd_;
+        id = tcp_registration_;
     }
+    EventDispatcher::GetInstance().UnregisterEvent(fd, id);
+}
+
+void FastRdmaEndpoint::CloseTcpFd() {
+    std::lock_guard<std::mutex> lock(connection_mutex_);
+    if (tcp_fd_ >= 0) { close(tcp_fd_); tcp_fd_ = -1; }
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +278,7 @@ bool FastRdmaEndpoint::IsWritable() const {
 void FastRdmaEndpoint::WaitForWritable() {
     std::unique_lock<std::mutex> lock(send_mutex_);
     send_cv_.wait(lock, [this] {
-        return IsWritable() || !_stop.load(std::memory_order_relaxed);
+        return IsWritable() || _stop.load(std::memory_order_relaxed);
     });
 }
 
@@ -245,13 +316,17 @@ int FastRdmaEndpoint::ReadFromFd(int fd, void* data, size_t len) {
     size_t received = 0;
     char*  buf      = static_cast<char*>(data);
     while (received < len) {
+        if (Failed()) { errno = error(); return -1; }
         ssize_t nr = read(fd, buf + received, len - received);
         if (nr > 0) {
             received += static_cast<size_t>(nr);
         } else if (nr == 0) {
+            errno = ECONNRESET;
             return -1;  // EOF
-        } else if (errno == EAGAIN) {
-            usleep(50000);
+        } else if (errno == EINTR) {
+            continue;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            usleep(1000);
         } else {
             return -1;
         }
@@ -263,11 +338,14 @@ int FastRdmaEndpoint::WriteToFd(int fd, const void* data, size_t len) {
     size_t written = 0;
     const char* buf = static_cast<const char*>(data);
     while (written < len) {
-        ssize_t nw = write(fd, buf + written, len - written);
+        if (Failed()) { errno = error(); return -1; }
+        ssize_t nw = send(fd, buf + written, len - written, MSG_NOSIGNAL);
         if (nw > 0) {
             written += static_cast<size_t>(nw);
-        } else if (errno == EAGAIN) {
-            usleep(50000);
+        } else if (errno == EINTR) {
+            continue;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            usleep(1000);
         } else {
             return -1;
         }
@@ -302,8 +380,8 @@ int FastRdmaEndpoint::ProcessHandshakeAtClient(FastRdmaEndpoint* ep, int tcp_fd)
     HelloMessage remote;
     remote.Deserialize(data);
 
-    if (memcmp(remote.magic, "RDMA", 4) != 0) return -1;
-    if (!HelloNegotiationValid(remote)) return -1;
+    if (memcmp(remote.magic, "RDMA", 4) != 0) { errno = EPROTO; return -1; }
+    if (!HelloNegotiationValid(remote)) { errno = EPROTO; return -1; }
 
     // 4. Set negotiated params
     ep->remote_recv_block_size_ = remote.block_size;
@@ -333,8 +411,8 @@ int FastRdmaEndpoint::ProcessHandshakeAtServer(FastRdmaEndpoint* ep, int tcp_fd)
 
     HelloMessage remote;
     remote.Deserialize(data);
-    if (memcmp(remote.magic, "RDMA", 4) != 0) return -1;
-    if (!HelloNegotiationValid(remote)) return -1;
+    if (memcmp(remote.magic, "RDMA", 4) != 0) { errno = EPROTO; return -1; }
+    if (!HelloNegotiationValid(remote)) { errno = EPROTO; return -1; }
 
     // 2. Set negotiated params from client info
     ep->remote_recv_block_size_ = remote.block_size;
@@ -393,7 +471,7 @@ int FastRdmaEndpoint::AllocateResources() {
     auto rollback = MakeScopeGuard([&] {
         const int saved_errno = errno;
         if (dispatcher != nullptr && comp_channel_ != nullptr) {
-            dispatcher->UnregisterEvent(comp_channel_->fd);
+            dispatcher->UnregisterEvent(comp_channel_->fd, cq_registration_);
         }
         DeallocateResources();
         errno = saved_errno;
@@ -462,9 +540,14 @@ int FastRdmaEndpoint::AllocateResources() {
 
     // Publish only after nonblocking setup and resource initialization succeed.
     dispatcher = &EventDispatcher::GetInstance();
-    if (dispatcher->RegisterEvent(comp_channel_->fd, OnCompChannelEvent, nullptr,
-                                  this, EPOLLIN | EPOLLET) < 0) {
-        return fail("Fail to register completion channel");
+    {
+        std::lock_guard<std::mutex> lock(connection_mutex_);
+        if (Failed()) { errno = error(); return -1; }
+        cq_event_fd_ = comp_channel_->fd;
+        if (dispatcher->RegisterEvent(cq_event_fd_, OnCompChannelEvent, nullptr,
+                reinterpret_cast<void*>(id()), EPOLLIN | EPOLLET, &cq_registration_) < 0) {
+            return fail("Fail to register completion channel");
+        }
     }
 
     rollback.dismiss();
@@ -566,36 +649,32 @@ int FastRdmaEndpoint::BringUpDataQp(uint16_t lid, ibv_gid gid, uint32_t remote_q
 }
 
 void FastRdmaEndpoint::DeallocateResources() {
+    // Owner has joined CPU users, or initialization has not published resources.
+    // Match brpc's non-pooled teardown: destroy QPs before returning buffers.
+    // Destruction failure must not be followed by releasing DMA-visible memory.
+    if (data_qp_) { CHECK_EQ(0, ibv_destroy_qp(data_qp_)); data_qp_ = nullptr; }
+    if (qp_) { CHECK_EQ(0, ibv_destroy_qp(qp_)); qp_ = nullptr; }
+    auto destroy_cq = [](ibv_cq*& cq, int& events) {
+        if (!cq) return;
+        if (events) { ibv_ack_cq_events(cq, events); events = 0; }
+        CHECK_EQ(0, ibv_destroy_cq(cq));
+        cq = nullptr;
+    };
+    destroy_cq(data_send_cq_, data_send_cq_events);
+    destroy_cq(data_recv_cq_, data_recv_cq_events);
+    destroy_cq(send_cq_, send_cq_events);
+    destroy_cq(recv_cq_, recv_cq_events);
+    if (comp_channel_) {
+        CHECK_EQ(0, ibv_destroy_comp_channel(comp_channel_));
+        comp_channel_ = nullptr;
+    }
     sbuf_.clear();
     rbuf_.clear();
     rbuf_data_.clear();
-
-    // Clean up pending LargeBlock MRs — deregister + free unclaimed blocks.
-    {
-        std::lock_guard<std::mutex> lock(pending_large_mutex_);
-        for (auto& kv : pending_large_map_) {
-            ibv_mr* mr = kv.second;
-            if (mr) {
-                ibv_dereg_mr(mr);
-                free(mr->addr);
-            }
-        }
-        pending_large_map_.clear();
-    }
-
-    // Clean up pending Large frames (IOBuf destructors release BlockPool blocks).
-    {
-        std::lock_guard<std::mutex> lock(large_frame_mutex_);
-        pending_large_frames_.clear();
-    }
-
-    if (data_qp_)      { ibv_destroy_qp(data_qp_);        data_qp_ = nullptr; }
-    if (data_send_cq_) { ibv_destroy_cq(data_send_cq_);    data_send_cq_ = nullptr; }
-    if (data_recv_cq_) { ibv_destroy_cq(data_recv_cq_);    data_recv_cq_ = nullptr; }
-    if (qp_)      { ibv_destroy_qp(qp_);            qp_ = nullptr; }
-    if (send_cq_) { ibv_destroy_cq(send_cq_);        send_cq_ = nullptr; }
-    if (recv_cq_) { ibv_destroy_cq(recv_cq_);        recv_cq_ = nullptr; }
-    if (comp_channel_) { ibv_destroy_comp_channel(comp_channel_); comp_channel_ = nullptr; }
+    read_buf_.clear();
+    for (auto& kv : pending_large_map_) ReturnLargeBlock(kv.second);
+    pending_large_map_.clear();
+    pending_large_frames_.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -603,6 +682,7 @@ void FastRdmaEndpoint::DeallocateResources() {
 // ---------------------------------------------------------------------------
 
 int FastRdmaEndpoint::PostLargeWriteRecv(ibv_mr* mr) {
+    if (Failed()) { errno = error(); return -1; }
     ibv_sge sge = {};
     sge.addr   = reinterpret_cast<uint64_t>(mr->addr);
     sge.length = 4;
@@ -619,6 +699,7 @@ ssize_t FastRdmaEndpoint::CutSegFromIOBuf(IOBuf* buf,
                                            uint64_t remote_addr,
                                            uint32_t imm_rkey,
                                            uint32_t rpc_id) {
+    if (Failed()) { errno = error(); return -1; }
     ibv_sge sglist[MAX_SGE];
     size_t sge_idx = 0;
     size_t total = 0;
@@ -707,6 +788,7 @@ int FastRdmaEndpoint::PostRecv(uint32_t num, bool zerocopy) {
 // ---------------------------------------------------------------------------
 
 ssize_t FastRdmaEndpoint::CutFromIOBufList(IOBuf** from, size_t ndata) {
+    if (Failed()) { errno = error(); return -1; }
     uint32_t remote_rq_wnd = remote_rq_window_size_.load(std::memory_order_relaxed);
     uint32_t sq_wnd        = sq_window_size_.load(std::memory_order_relaxed);
 
@@ -811,12 +893,11 @@ FastRdmaEndpoint::WriteRequest* FastRdmaEndpoint::PublishWriteRequest(WriteReque
 }
 
 int FastRdmaEndpoint::WriteError() const {
-    if (!_stop.load(std::memory_order_acquire)) return 0;
-    const int error = _write_error.load(std::memory_order_relaxed);
-    return error != 0 ? error : ECANCELED;
+    return error();
 }
 
 int FastRdmaEndpoint::StartWrite(IOBuf&& data) {
+    if (Failed()) { errno = error(); return -1; }
     if (const int error = WriteError()) {
         errno = error;
         return -1;
@@ -871,13 +952,13 @@ int FastRdmaEndpoint::StartWrite(IOBuf&& data) {
 }
 
 int FastRdmaEndpoint::StartKeepWrite(WriteRequest* req) {
-    _running_threads.fetch_add(1, std::memory_order_relaxed);
+    EndpointUniquePtr operation;
+    ReAddress(&operation);
     std::thread worker;
     int error = 0;
     try {
-        worker = std::thread([this, req]() {
+        worker = std::thread([this, req, operation = std::move(operation)]() {
             KeepWrite(req);
-            _running_threads.fetch_sub(1, std::memory_order_relaxed);
         });
     } catch (const std::system_error& e) {
         error = e.code().value();
@@ -887,7 +968,6 @@ int FastRdmaEndpoint::StartKeepWrite(WriteRequest* req) {
     }
     if (error != 0) {
         const int rc = FailWrite(req, error);
-        _running_threads.fetch_sub(1, std::memory_order_relaxed);
         return rc;
     }
     worker.detach();
@@ -896,10 +976,7 @@ int FastRdmaEndpoint::StartKeepWrite(WriteRequest* req) {
 
 int FastRdmaEndpoint::FailWrite(WriteRequest* req, int error) {
     if (error == 0) error = EIO;
-    int expected = 0;
-    _write_error.compare_exchange_strong(expected, error, std::memory_order_relaxed);
-    // Reject subsequent writes before releasing any request or ownership.
-    StopCqPolling();
+    SetFailed(error);
     ReleaseAllFailedWriteRequests(req);
     errno = _write_error.load(std::memory_order_relaxed);
     return -1;
@@ -1041,8 +1118,9 @@ int FastRdmaEndpoint::StartAsyncConnect() {
     if (sock_fd < 0) return -1;
     auto close_on_failure = MakeScopeGuard([&] {
         const int saved_errno = errno;
+        std::lock_guard<std::mutex> lock(connection_mutex_);
+        if (tcp_fd_ == sock_fd) tcp_fd_ = -1;
         close(sock_fd);
-        tcp_fd_ = -1;
         errno = saved_errno;
     });
     if (SetNonBlocking(sock_fd) < 0 || fcntl(sock_fd, F_SETFD, FD_CLOEXEC) < 0) {
@@ -1053,9 +1131,9 @@ int FastRdmaEndpoint::StartAsyncConnect() {
         return -1;
     }
 
-    tcp_fd_ = sock_fd;
-    if (EventDispatcher::GetInstance().RegisterEvent(
-            sock_fd, OnClientHandshake, nullptr, this, EPOLLOUT | EPOLLET) < 0) {
+    if (RegisterTcpEvent(sock_fd, OnClientHandshake, EPOLLOUT | EPOLLET) < 0) {
+        std::lock_guard<std::mutex> lock(connection_mutex_);
+        tcp_fd_ = -1;
         return -1;
     }
     close_on_failure.dismiss();
@@ -1115,141 +1193,124 @@ int FastRdmaEndpoint::GetAndAckEvents() {
 
 void FastRdmaEndpoint::OnServerAccept(void* user_data, uint32_t events) {
     if (events & (EPOLLERR | EPOLLHUP)) return;
-
     auto* server = static_cast<FastServer*>(user_data);
-    int listen_fd = server->listen_fd();
     while (true) {
-        int client_fd = accept(listen_fd, nullptr, nullptr);
-        if (client_fd < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+        const int fd = accept4(server->listen_fd(), nullptr, nullptr,
+                               SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if (fd < 0) {
             if (errno == EINTR) continue;
-            PLOG(ERROR) << "accept error, fd=" << listen_fd;
             return;
         }
-        fcntl(client_fd, F_SETFL, O_NONBLOCK);
-        fcntl(client_fd, F_SETFD, FD_CLOEXEC);
-
-        auto* ep = new FastRdmaEndpoint();
-        ep->tcp_fd_ = client_fd;
-        ep->_owner  = server;
+        auto fd_guard = MakeScopeGuard([fd] { close(fd); });
+        EndpointId endpoint_id;
+        if (FastRdmaEndpoint::Create(&endpoint_id) != 0) return;
+        EndpointUniquePtr owned;
+        CHECK_EQ(0, FastRdmaEndpoint::Address(endpoint_id, &owned));
+        auto* ep = owned.get();
+        ep->tcp_fd_ = fd;
+        fd_guard.dismiss();
+        ep->_owner = server;
         ep->_large_done_cb = [server] { server->NotifyLargeDone(); };
+        ep->SetFailureHandler([server](int) { server->NotifyEndpointFailed(); });
         ep->msg_dispatcher().SetMode(DispatcherMode::kServer);
         ep->msg_dispatcher().SetHandler(FastServer::OnProcessRequest, ep);
-        EventDispatcher::GetInstance().RegisterEvent(
-            client_fd, OnServerHandshake, nullptr, ep, EPOLLIN | EPOLLET);
+        server->AddEndpoint(ep);  // includes incomplete handshakes
+        if (ep->Failed()) return;
+        if (ep->RegisterTcpEvent(fd, OnServerHandshake, EPOLLIN | EPOLLET) < 0) {
+            ep->SetFailed(errno);
+        }
     }
 }
 
 void FastRdmaEndpoint::OnServerHandshake(void* user_data, uint32_t events) {
-    auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
-    int fd = ep->tcp_fd_;
-
-    EventDispatcher::GetInstance().UnregisterEvent(fd);
+    EndpointUniquePtr operation;
+    if (Address(reinterpret_cast<EndpointId>(user_data), &operation) != 0) return;
+    auto* ep = operation.get();
+    const int fd = ep->tcp_fd_;
+    ep->UnregisterTcpEvent();
     if (events & (EPOLLERR | EPOLLHUP)) {
-        close(fd);
-        delete ep;
+        ep->SetFailed(ECONNRESET);
         return;
     }
-
-    ep->_running_threads.fetch_add(1, std::memory_order_relaxed);
-    std::thread([ep, fd]() {
-        int ret = ProcessHandshakeAtServer(ep, fd);
-        close(fd);
-        if (ret == 0) {
-            ep->_handshake_ok.store(true, std::memory_order_release);
-            if (ep->owner()) {
-                ep->owner()->AddEndpoint(ep->qp()->qp_num, ep);
+    EndpointUniquePtr worker_ref;
+    ep->ReAddress(&worker_ref);
+    try {
+        std::thread([ep, fd, operation = std::move(worker_ref)] {
+            int ret = -1;
+            try { ret = ProcessHandshakeAtServer(ep, fd); }
+            catch (const std::exception&) { errno = ENOMEM; }
+            const int saved_errno = errno;
+            ep->CloseTcpFd();
+            if (ret == 0 && !ep->Failed()) {
+                ep->_handshake_ok.store(true, std::memory_order_release);
+            } else {
+                ep->SetFailed(saved_errno);
             }
-        } else {
-            delete ep;
-        }
-        ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
-    }).detach();
+        }).detach();
+    } catch (const std::system_error& e) {
+        ep->SetFailed(e.code().value());
+    } catch (const std::bad_alloc&) {
+        ep->SetFailed(ENOMEM);
+    }
 }
 
 void FastRdmaEndpoint::OnClientHandshake(void* user_data, uint32_t events) {
-    auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
+    EndpointUniquePtr operation;
+    if (Address(reinterpret_cast<EndpointId>(user_data), &operation) != 0) return;
+    auto* ep = operation.get();
     const int fd = ep->tcp_fd_;
-    EventDispatcher::GetInstance().UnregisterEvent(fd);
-
-    // EPOLLOUT also reports failed connects. Every failure must return the
-    // pending writer's ownership through the same queue drain protocol.
+    ep->UnregisterTcpEvent();
     int so_err = 0;
     socklen_t len = sizeof(so_err);
     int error = 0;
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &len) < 0) {
-        error = errno;
-    } else if (so_err != 0) {
-        error = so_err;
-    } else if (events & (EPOLLERR | EPOLLHUP)) {
-        error = ECONNRESET;
-    }
-    if (error != 0) {
-        close(fd);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &len) < 0) error = errno;
+    else if (so_err != 0) error = so_err;
+    else if (events & (EPOLLERR | EPOLLHUP)) error = ECONNRESET;
+    if (error) {
+        ep->CloseTcpFd();
         ep->FailPendingWrite(error);
         return;
     }
-
-    ep->_running_threads.fetch_add(1, std::memory_order_relaxed);
-    std::thread worker;
+    EndpointUniquePtr worker_ref;
+    ep->ReAddress(&worker_ref);
     try {
-        worker = std::thread([ep, fd]() {
+        std::thread([ep, fd, operation = std::move(worker_ref)] {
             int ret = -1;
-            try {
-                ret = ProcessHandshakeAtClient(ep, fd);
-            } catch (const std::system_error& e) {
-                errno = e.code().value();
-            } catch (const std::bad_alloc&) {
-                errno = ENOMEM;
-            }
+            try { ret = ProcessHandshakeAtClient(ep, fd); }
+            catch (const std::system_error& e) { errno = e.code().value(); }
+            catch (const std::bad_alloc&) { errno = ENOMEM; }
             const int saved_errno = errno;
-            close(fd);
-            if (ret == 0) {
+            ep->CloseTcpFd();
+            if (ret == 0 && !ep->Failed()) {
                 ep->_handshake_ok.store(true, std::memory_order_release);
                 WriteRequest* req = ep->_pending_keepwrite_req.exchange(
                     nullptr, std::memory_order_acq_rel);
-                if (req != nullptr) ep->StartKeepWrite(req);
+                if (req) ep->StartKeepWrite(req);
             } else {
-                ep->FailPendingWrite(saved_errno);
+                ep->FailPendingWrite(ep->Failed() ? ep->error() : saved_errno);
             }
-            ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
-        });
-    } catch (const std::system_error& e) {
-        error = e.code().value();
-    } catch (const std::bad_alloc&) {
-        error = ENOMEM;
-    }
-    if (error != 0) {
-        close(fd);
+        }).detach();
+    } catch (const std::system_error& e) { error = e.code().value(); }
+      catch (const std::bad_alloc&) { error = ENOMEM; }
+    if (error) {
+        ep->CloseTcpFd();
         ep->FailPendingWrite(error);
-        ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
-        return;
     }
-    worker.detach();
 }
 
-// ============================================================
-// comp_channel callback — PollCq dispatch
-// ============================================================
-
-void FastRdmaEndpoint::OnCompChannelEvent(void* user_data, uint32_t /*events*/) {
-    auto* ep = static_cast<FastRdmaEndpoint*>(user_data);
-    // Only start a new PollCq thread if no thread is already running.
+void FastRdmaEndpoint::OnCompChannelEvent(void* user_data, uint32_t) {
+    EndpointUniquePtr operation;
+    if (Address(reinterpret_cast<EndpointId>(user_data), &operation) != 0) return;
+    auto* ep = operation.get();
     if (ep->AddReadEvent()) {
-        ep->_running_threads.fetch_add(1, std::memory_order_relaxed);
-        std::thread t;
+        EndpointUniquePtr worker_ref;
+        ep->ReAddress(&worker_ref);
         try {
-            t = std::thread([](FastRdmaEndpoint* e) {
-                PollCq(e);
-                e->_running_threads.fetch_sub(1, std::memory_order_relaxed);
-            }, ep);
-        } catch (const std::exception& error) {
-            ep->StopCqPolling();
-            LOG(ERROR) << "Fail to start CQ polling thread: " << error.what();
-            ep->_running_threads.fetch_sub(1, std::memory_order_relaxed);
-            return;
+            std::thread([ep, operation = std::move(worker_ref)] { PollCq(ep); }).detach();
+        } catch (const std::exception& e) {
+            ep->SetFailed(EAGAIN);
+            LOG(ERROR) << "Fail to start CQ polling thread: " << e.what();
         }
-        t.detach();
     }
 }
 
@@ -1257,7 +1318,7 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
     if (ep->_stop.load(std::memory_order_relaxed)) return;
 
     if (ep->GetAndAckEvents() < 0) {
-        ep->StopCqPolling();
+        ep->SetFailed(errno ? errno : EIO);
         return;
     }
 
@@ -1276,7 +1337,7 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
         int cnt = ibv_poll_cq(cqs[phase], 32, wc);
         if (cnt < 0) {
             LOG(ERROR) << "Fail to poll CQ, phase=" << phase << ", result=" << cnt;
-            ep->StopCqPolling();
+            ep->SetFailed(errno ? errno : EIO);
             return;
         }
 
@@ -1297,7 +1358,7 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
             // Still empty after arm — check for new events.
             if (!ep->MoreReadEvents(&progress)) break;
             if (ep->GetAndAckEvents() < 0) {
-                ep->StopCqPolling();
+                ep->SetFailed(errno ? errno : EIO);
                 return;
             }
             phase = 0;
@@ -1308,25 +1369,19 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
         notified = false;
 
         for (int i = 0; i < cnt; ++i) {
+            if (wc[i].status != IBV_WC_SUCCESS) {
+                ep->SetFailed(EIO);
+                return;  // retain all posted buffers until QP teardown
+            }
             switch (phase) {
             case 0:  // control recv_cq
-                if (wc[i].status != IBV_WC_SUCCESS) continue;
-                ep->HandleCompletion(wc[i]);
+                if (ep->HandleCompletion(wc[i]) < 0) {
+                    ep->SetFailed(errno ? errno : EIO);
+                    return;
+                }
                 break;
             case 1: {  // data_recv_cq
                 uint32_t rkey = ntohl(wc[i].imm_data);
-                if (wc[i].status != IBV_WC_SUCCESS) {
-                    PLOG(ERROR) << "data_recv_cq WC error: opcode=" << wc[i].opcode
-                                << " status=" << wc[i].status << "("
-                                << ibv_wc_status_str(wc[i].status) << ") wr_id=" << wc[i].wr_id;
-                    std::lock_guard<std::mutex> lock(ep->pending_large_mutex_);
-                    auto it = ep->pending_large_map_.find(rkey);
-                    if (it != ep->pending_large_map_.end()) {
-                        ReturnLargeBlock(it->second);
-                        ep->pending_large_map_.erase(it);
-                    }
-                    continue;
-                }
                 {
                     std::lock_guard<std::mutex> lock(ep->pending_large_mutex_);
                     auto it = ep->pending_large_map_.find(rkey);
@@ -1345,18 +1400,12 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
                 break;
             }
             case 2:  // control send_cq
-                if (wc[i].status != IBV_WC_SUCCESS) continue;
-                ep->HandleCompletion(wc[i]);
+                if (ep->HandleCompletion(wc[i]) < 0) {
+                    ep->SetFailed(errno ? errno : EIO);
+                    return;
+                }
                 break;
             case 3: {  // data_send_cq
-                if (wc[i].status != IBV_WC_SUCCESS) {
-                    PLOG(ERROR) << "data_send_cq WC error: opcode=" << wc[i].opcode
-                                << " status=" << wc[i].status << "("
-                                << ibv_wc_status_str(wc[i].status) << ") wr_id=" << wc[i].wr_id;
-                    ep->ReleaseLargeFrame(static_cast<uint32_t>(wc[i].wr_id));
-                    ep->OnLargeTransferComplete();
-                    continue;
-                }
                 uint32_t rpc_id = static_cast<uint32_t>(wc[i].wr_id);
                 ep->ReleaseLargeFrame(rpc_id);
                 ep->OnLargeTransferComplete();
@@ -1367,7 +1416,10 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
 
         // Dispatch frames added to read_buf_ by recv CQs.
         if (phase <= 1) {
-            ep->_msg_dispatcher.ProcessNewMessage(ep->read_buf_);
+            if (ep->_msg_dispatcher.ProcessNewMessage(ep->read_buf_, ep) < 0) {
+                ep->SetFailed(errno ? errno : EIO);
+                return;
+            }
         }
     }
 }
@@ -1384,15 +1436,7 @@ bool FastRdmaEndpoint::MoreReadEvents(int* progress) {
         std::memory_order_acquire);
 }
 
-void FastRdmaEndpoint::StopCqPolling() {
-    // Keep _nevent occupied on failure, including for a callback that already
-    // passed the stop check. Resource reclamation belongs to the shutdown path.
-    {
-        std::lock_guard<std::mutex> lock(send_mutex_);
-        _stop.store(true, std::memory_order_release);
-    }
-    send_cv_.notify_all();
-}
+void FastRdmaEndpoint::StopCqPolling() { SetFailed(EIO); }
 
 ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {
     bool zerocopy = true;

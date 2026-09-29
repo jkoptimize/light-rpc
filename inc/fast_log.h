@@ -15,7 +15,7 @@
 // in detail/fast_log_macros.h are ported from brpc; see the port record.
 namespace fast {
 
-enum LogLevel { INFO, ERROR, FATAL };
+enum LogLevel { INFO, WARNING, ERROR, FATAL };
 
 inline std::atomic<int> min_log_level{INFO};
 

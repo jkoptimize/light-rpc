@@ -3,7 +3,10 @@
 #include <functional>
 #include "fast_iobuf.h"
 
+
 namespace fast {
+
+class FastRdmaEndpoint;
 
 enum class DispatcherMode { kServer, kClient };
 
@@ -21,7 +24,7 @@ public:
 
     // Called when new data arrives in read_buf.
     // Returns number of frames dispatched, -1 on error.
-    int ProcessNewMessage(IOBuf& read_buf);
+    int ProcessNewMessage(IOBuf& read_buf, FastRdmaEndpoint* endpoint);
 
     // Cut one complete frame from read_buf.  Returns true on success.
     bool CutInputMessage(IOBuf& read_buf, IOBuf& frame);

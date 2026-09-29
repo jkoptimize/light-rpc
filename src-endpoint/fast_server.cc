@@ -20,17 +20,39 @@ namespace fast {
 FastServer::FastServer(std::string local_ip, int local_port)
     : local_ip_(std::move(local_ip)), local_port_(local_port) {}
 
-FastServer::~FastServer() {
-    {
-        std::lock_guard<std::mutex> lock(large_mutex_);
-        closed_ = true;
-    }
-    large_cv_.notify_all();
+FastServer::~FastServer() { Close(); }
 
-    std::lock_guard<std::mutex> lock(conn_mutex_);
-    for (auto& kv : conn_map_) {
-        delete kv.second;
-    }
+void FastServer::Close() {
+    std::call_once(close_once_, [this] {
+        {
+            std::lock_guard<std::mutex> lock(conn_mutex_);
+            stopping_ = true;
+        }
+        if (listen_fd_ >= 0) {
+            EventDispatcher::GetInstance().UnregisterEvent(listen_fd_, listen_registration_);
+            // The listener carries raw server user_data. Its IOEventData's last
+            // reference notifies us after any in-flight accept callback returns.
+            std::unique_lock<std::mutex> lock(conn_mutex_);
+            recycled_cv_.wait(lock, [this] { return listener_recycled_; });
+            close(listen_fd_);
+            listen_fd_ = -1;
+        }
+        {
+            std::lock_guard<std::mutex> lock(large_mutex_);
+            closed_ = true;
+        }
+        large_cv_.notify_all();
+        std::vector<EndpointId> ids;
+        {
+            std::lock_guard<std::mutex> lock(conn_mutex_);
+            ids.assign(endpoints_.begin(), endpoints_.end());
+        }
+        // Never fail an endpoint while holding the owner mutex: recycling may
+        // happen inline when SetFailed releases the last reference.
+        for (EndpointId id : ids) FastRdmaEndpoint::SetFailedById(id, ECANCELED);
+        std::unique_lock<std::mutex> lock(conn_mutex_);
+        recycled_cv_.wait(lock, [this] { return endpoints_.empty(); });
+    });
 }
 
 void FastServer::AddService(ServiceOwnership ownership,
@@ -63,17 +85,43 @@ void FastServer::BuildAndStart() {
     fcntl(listen_fd_, F_SETFL, O_NONBLOCK);
     fcntl(listen_fd_, F_SETFD, FD_CLOEXEC);
 
-    EventDispatcher::GetInstance().RegisterEvent(
+    {
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+        listener_recycled_ = false;
+    }
+    CHECK_EQ(0, EventDispatcher::GetInstance().RegisterEvent(
         listen_fd_,
         FastRdmaEndpoint::OnServerAccept,
         nullptr,   // output_cb
         this,      // user_data = FastServer*
-        EPOLLIN | EPOLLET);
+        EPOLLIN | EPOLLET, &listen_registration_, [this] {
+            std::lock_guard<std::mutex> lock(conn_mutex_);
+            listener_recycled_ = true;
+            recycled_cv_.notify_all();
+        }));
 }
 
-void FastServer::AddEndpoint(uint32_t qp_num, FastRdmaEndpoint* ep) {
+void FastServer::AddEndpoint(FastRdmaEndpoint* ep) {
+    const EndpointId id = ep->id();
+    ep->SetRecycleHandler([this, id] { OnEndpointRecycled(id); });
+    bool stopping;
+    {
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+        endpoints_.insert(id);
+        stopping = stopping_;
+    }
+    if (stopping) ep->SetFailed(ECANCELED);
+}
+
+void FastServer::OnEndpointRecycled(EndpointId id) {
     std::lock_guard<std::mutex> lock(conn_mutex_);
-    conn_map_[qp_num] = ep;
+    endpoints_.erase(id);
+    recycled_cv_.notify_all();
+}
+
+void FastServer::NotifyEndpointFailed() {
+    std::lock_guard<std::mutex> lock(large_mutex_);
+    large_cv_.notify_all();
 }
 
 // ============================================================
@@ -84,6 +132,8 @@ int FastServer::OnProcessRequest(IOBuf& frame, void* arg) {
     auto* ep     = static_cast<FastRdmaEndpoint*>(arg);
     auto* server = ep->owner();
     if (server == nullptr) return -1;
+
+    if (ep->Failed()) return -1;
 
     // Frame: [total_len:4B][msg_type:4B][rpc_id:4B][...]
     // total_len already consumed by CutInputMessage; skip it.
@@ -216,17 +266,19 @@ int FastServer::OnProcessRequest(IOBuf& frame, void* arg) {
     }
 
     // Dispatch.
-    CallBackArgs args;
-    args.rpc_id    = rpc_id;
-    args.error_code = ERR_SUCCESS;
-    args.endpoint  = ep;
-    args.request   = request.release();
-    args.response  = response.release();
-    args.request_attachment = std::move(req_attachment);
+    auto args = std::make_unique<CallBackArgs>();
+    args->rpc_id = rpc_id;
+    args->error_code = ERR_SUCCESS;
+    args->endpoint = ep;
+    ep->ReAddress(&args->reference);
+    args->request = request.release();
+    args->response = response.release();
+    args->request_attachment = std::move(req_attachment);
 
+    auto* context = args.release();
     auto* done = google::protobuf::NewCallback(
-        server, &FastServer::ReturnRPCResponse, args);
-    service->CallMethod(method, nullptr, args.request, args.response, done);
+        server, &FastServer::ReturnRPCResponse, context);
+    service->CallMethod(method, nullptr, context->request, context->response, done);
     return 0;
 }
 
@@ -249,22 +301,26 @@ void FastServer::SendErrorResponse(FastRdmaEndpoint* ep, uint32_t rpc_id,
     ep->StartWrite(std::move(frame));
 }
 
-void FastServer::WaitForLargeWritable(FastRdmaEndpoint* ep) {
+bool FastServer::WaitForLargeWritable(FastRdmaEndpoint* ep) {
     std::unique_lock<std::mutex> lock(large_mutex_);
     large_cv_.wait(lock, [this, ep] {
-        return ep->CanStartLargeTransfer() || closed_;
+        return ep->CanStartLargeTransfer() || closed_ || ep->Failed();
     });
-    if (!closed_) ep->StartLargeTransfer();
+    if (closed_ || ep->Failed()) return false;
+    ep->StartLargeTransfer();
+    return true;
 }
 
-void FastServer::ReturnRPCResponse(CallBackArgs args) {
-    std::unique_ptr<google::protobuf::Message> req_guard(args.request);
-    std::unique_ptr<google::protobuf::Message> resp_guard(args.response);
+void FastServer::ReturnRPCResponse(CallBackArgs* args) {
+    std::unique_ptr<CallBackArgs> context(args);
+    std::unique_ptr<google::protobuf::Message> req_guard(args->request);
+    std::unique_ptr<google::protobuf::Message> resp_guard(args->response);
 
-    uint32_t attachment_len = args.response_attachment.length();
+    if (args->endpoint->Failed()) return;
+    uint32_t attachment_len = args->response_attachment.length();
     // On error (error_code != 0), response and request may be nullptr.
-    uint32_t payload_len = (args.response != nullptr)
-                               ? args.response->ByteSizeLong() : 0;
+    uint32_t payload_len = (args->response != nullptr)
+                               ? args->response->ByteSizeLong() : 0;
     uint32_t total_len   = 20 + payload_len + attachment_len;
 
     // Frame: [total_len(BE)][msg_type(BE)][rpc_id(BE)][error_code(BE)][attachment_size(BE)][payload][attachment]
@@ -273,38 +329,38 @@ void FastServer::ReturnRPCResponse(CallBackArgs args) {
 
     be = htonl(total_len);               frame.append(&be, 4);
     be = htonl(MSG_NORMAL_RESPONSE);     frame.append(&be, 4);
-    be = htonl(args.rpc_id);             frame.append(&be, 4);
-    be = htonl(args.error_code);         frame.append(&be, 4);
+    be = htonl(args->rpc_id);             frame.append(&be, 4);
+    be = htonl(args->error_code);         frame.append(&be, 4);
     be = htonl(attachment_len);          frame.append(&be, 4);
 
-    if (args.response != nullptr) {
+    if (args->response != nullptr) {
         IOBufAsZeroCopyOutputStream zcos(&frame);
         google::protobuf::io::CodedOutputStream coded(&zcos);
-        args.response->SerializeWithCachedSizes(&coded);
+        args->response->SerializeWithCachedSizes(&coded);
         CHECK(!coded.HadError());
     }
 
     if (attachment_len > 0) {
-        frame.append(args.response_attachment);
+        frame.append(args->response_attachment);
     }
 
     if (total_len >= msg_threshold) {
         // Large path: store frame, send MSG_NOTIFY on control QP
-        args.endpoint->StoreLargeFrame(args.rpc_id, std::move(frame));
-        WaitForLargeWritable(args.endpoint);
+        args->endpoint->StoreLargeFrame(args->rpc_id, std::move(frame));
+        if (!WaitForLargeWritable(args->endpoint)) return;
 
         IOBuf notify_frame;
         be = htonl(kNotifyFrameBytes);  notify_frame.append(&be, 4);
         be = htonl(MSG_NOTIFY);          notify_frame.append(&be, 4);
-        be = htonl(args.rpc_id);         notify_frame.append(&be, 4);
+        be = htonl(args->rpc_id);         notify_frame.append(&be, 4);
         be = htonl(total_len);           notify_frame.append(&be, 4);
-        args.endpoint->StartWrite(std::move(notify_frame));
+        args->endpoint->StartWrite(std::move(notify_frame));
         // MSG_AUTHORITY arrives -> OnProcessRequest triggers CutSegFromIOBuf
         return;
     }
 
     // Medium path
-    args.endpoint->StartWrite(std::move(frame));
+    args->endpoint->StartWrite(std::move(frame));
 }
 
 }  // namespace fast

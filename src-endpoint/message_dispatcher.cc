@@ -1,7 +1,10 @@
 #include <arpa/inet.h>
 #include <thread>
+#include <cerrno>
+#include <system_error>
 #include "fast_define.h"
 #include "message_dispatcher.h"
+#include "fast_rdma_endpoint.h"
 
 namespace fast {
 
@@ -22,7 +25,7 @@ bool MessageDispatcher::CutInputMessage(IOBuf& read_buf, IOBuf& frame) {
     return true;
 }
 
-int MessageDispatcher::ProcessNewMessage(IOBuf& read_buf) {
+int MessageDispatcher::ProcessNewMessage(IOBuf& read_buf, FastRdmaEndpoint* endpoint) {
     if (!_handler) return 0;
 
     int count = 0;
@@ -32,9 +35,17 @@ int MessageDispatcher::ProcessNewMessage(IOBuf& read_buf) {
 
         auto handler = _handler;
         auto arg     = _arg;
-        std::thread([handler, arg](IOBuf f) mutable {
-            handler(f, arg);
-        }, std::move(frame)).detach();
+        if (endpoint->Failed()) { errno = endpoint->error(); return -1; }
+        EndpointUniquePtr reference;
+        endpoint->ReAddress(&reference);
+        try {
+            std::thread([handler, arg, reference = std::move(reference)](IOBuf f) mutable {
+                handler(f, arg);
+            }, std::move(frame)).detach();
+        } catch (const std::system_error& e) {
+            errno = e.code().value();
+            return -1;
+        }
 
         ++count;
     }

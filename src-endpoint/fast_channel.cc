@@ -1,4 +1,6 @@
 #include <arpa/inet.h>
+#include <cerrno>
+#include <cstring>
 
 #include "fast_channel.h"
 #include "fast_define.h"
@@ -18,36 +20,83 @@ static const uint32_t kFixed32Bytes = 4;
 
 FastChannel::FastChannel(std::string dest_ip, int dest_port) {
     FastRdmaEndpoint::GlobalInitialize();
-    endpoint_ = new FastRdmaEndpoint();
+    CHECK_EQ(0, FastRdmaEndpoint::Create(&endpoint_id_));
+    EndpointUniquePtr endpoint;
+    CHECK_EQ(0, FastRdmaEndpoint::Address(endpoint_id_, &endpoint));
+    endpoint_ = endpoint.get();
     endpoint_->SetRemoteAddr(dest_ip, dest_port);
     endpoint_->msg_dispatcher().SetMode(DispatcherMode::kClient);
     endpoint_->msg_dispatcher().SetHandler(OnProcessResponse, this);
     endpoint_->_large_done_cb = [this] { large_cv_.notify_all(); };
+    endpoint_->SetFailureHandler([this](int error) { OnEndpointFailed(error); });
+    endpoint_->SetRecycleHandler([this] {
+        std::lock_guard<std::mutex> lock(recycle_mutex_);
+        recycled_ = true;
+        recycle_cv_.notify_all();
+    });
 }
 
-FastChannel::~FastChannel() {
+FastChannel::FastChannel(FastRdmaEndpoint* endpoint)
+    : endpoint_id_(endpoint->id()), endpoint_(endpoint) {
+    endpoint_->SetFailureHandler([this](int error) { OnEndpointFailed(error); });
+    endpoint_->SetRecycleHandler([this] {
+        std::lock_guard<std::mutex> lock(recycle_mutex_);
+        recycled_ = true;
+        recycle_cv_.notify_all();
+    });
+    endpoint_->msg_dispatcher().SetHandler(OnProcessResponse, this);
+}
+
+FastChannel::~FastChannel() { Close(); }
+
+void FastChannel::Close() {
+    std::call_once(close_once_, [this] {
+        FastRdmaEndpoint::SetFailedById(endpoint_id_, ECANCELED);
+        // CallMethod, message handlers and asynchronous workers hold endpoint
+        // references. The recycle callback is their final owner access.
+        std::unique_lock<std::mutex> lock(recycle_mutex_);
+        recycle_cv_.wait(lock, [this] { return recycled_; });
+    });
+}
+
+void FastChannel::OnEndpointFailed(int error) {
     {
         std::lock_guard<std::mutex> lock(large_mutex_);
         closed_ = true;
     }
     large_cv_.notify_all();
-    // Wake up any blocked CallMethod threads.
     std::lock_guard<std::mutex> lock(pending_mutex_);
+    if (connection_error_ == 0) connection_error_ = error;
     for (auto& kv : pending_map_) {
         PendingRequest* p = kv.second;
-        std::lock_guard<std::mutex> lock2(p->mutex);
+        std::lock_guard<std::mutex> request_lock(p->mutex);
+        if (p->done) continue;
+        p->transport_error = connection_error_;
         p->done = true;
         p->cv.notify_one();
     }
-    delete endpoint_;
 }
 
-void FastChannel::WaitForLargeWritable() {
+bool FastChannel::RegisterPending(uint32_t rpc_id, PendingRequest* request) {
+    // Same admission/notification protocol as brpc Socket::NotifyOnFailed.
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    if (connection_error_ != 0) {
+        request->transport_error = connection_error_;
+        request->done = true;
+        return false;
+    }
+    pending_map_[rpc_id] = request;
+    return true;
+}
+
+bool FastChannel::WaitForLargeWritable() {
     std::unique_lock<std::mutex> lock(large_mutex_);
     large_cv_.wait(lock, [this] {
         return endpoint_->CanStartLargeTransfer() || closed_;
     });
-    if (!closed_) endpoint_->StartLargeTransfer();
+    if (closed_) return false;
+    endpoint_->StartLargeTransfer();
+    return true;
 }
 
 void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
@@ -55,6 +104,11 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
                               const google::protobuf::Message* request,
                               google::protobuf::Message* response,
                               google::protobuf::Closure* /*done*/) {
+    EndpointUniquePtr call;
+    if (FastRdmaEndpoint::Address(endpoint_id_, &call) != 0) {
+        if (controller) controller->SetFailed("Channel closed");
+        return;
+    }
     // ---- 1. Build MetaDataOfRequest ----
     uint32_t rpc_id = rpc_id_.fetch_add(1, std::memory_order_relaxed);
     uint32_t attachment_len = request_attachment_.length();
@@ -100,15 +154,20 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     // ---- 3. Register pending request ----
     PendingRequest pending;
     pending.response = response;
-    {
-        std::lock_guard<std::mutex> lock(pending_mutex_);
-        pending_map_[rpc_id] = &pending;
+    if (!RegisterPending(rpc_id, &pending)) {
+        if (controller) controller->SetFailed(std::strerror(pending.transport_error));
+        return;
     }
 
     // ---- 4. Enqueue ----
     if (total_len >= msg_threshold) {
         // Large path: store frame, send MSG_NOTIFY on control QP
-        WaitForLargeWritable();
+        if (!WaitForLargeWritable()) {
+            std::lock_guard<std::mutex> lock(pending_mutex_);
+            pending_map_.erase(rpc_id);
+            if (controller) controller->SetFailed("Connection failed");
+            return;
+        }
         endpoint_->StoreLargeFrame(rpc_id, std::move(frame));
 
         IOBuf notify_frame;
@@ -117,7 +176,9 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
         be = htonl(MSG_NOTIFY);          notify_frame.append(&be, 4);
         be = htonl(rpc_id);              notify_frame.append(&be, 4);
         be = htonl(total_len);           notify_frame.append(&be, 4);
-        endpoint_->StartWrite(std::move(notify_frame));
+        if (endpoint_->StartWrite(std::move(notify_frame)) < 0) {
+            endpoint_->SetFailed(errno);
+        }
     } else {
         // Inline/Medium path: non-blocking enqueue on control QP
         if (endpoint_->StartWrite(std::move(frame)) < 0) {
@@ -138,13 +199,16 @@ void FastChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
                                       [&pending] { return pending.done; });
         if (!ok) {
             pending.timed_out = true;
+            pending.done = true;
             PLOG(ERROR) << "CallMethod timeout, rpc_id=" << rpc_id;
             if (controller) controller->SetFailed("RPC timeout");
         }
     }
 
     if (!pending.timed_out) {
-        if (pending.error_code != ErrorCode::ERR_SUCCESS) {
+        if (pending.transport_error != 0) {
+            if (controller) controller->SetFailed(std::strerror(pending.transport_error));
+        } else if (pending.error_code != ErrorCode::ERR_SUCCESS) {
             if (controller) {
                 switch (pending.error_code) {
                 case ErrorCode::ERR_UNKNOWN_SERVICE:
@@ -258,6 +322,8 @@ int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
         return -1;
     }
     PendingRequest* pending = it->second;
+    std::lock_guard<std::mutex> request_lock(pending->mutex);
+    if (pending->done) return 0;  // failure/timeout/response already won
 
     // Validate frame boundary.
     if (attachment_size > frame.length()) {
@@ -295,10 +361,7 @@ int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
         pending->attachment.append(frame);
     }
 
-    {
-        std::lock_guard<std::mutex> lock2(pending->mutex);
-        pending->done = true;
-    }
+    pending->done = true;
     pending->cv.notify_one();
     return 0;
 }

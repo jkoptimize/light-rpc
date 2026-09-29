@@ -4,6 +4,8 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <memory>
+#include <unordered_set>
 
 #include <google/protobuf/message.h>
 #include <google/protobuf/service.h>
@@ -30,6 +32,7 @@ struct CallBackArgs {
     FastRdmaEndpoint*   endpoint{nullptr};
     google::protobuf::Message* request{nullptr};
     google::protobuf::Message* response{nullptr};
+    EndpointUniquePtr reference; // retained through asynchronous service done
     IOBuf               request_attachment;
     IOBuf               response_attachment;
 };
@@ -38,13 +41,15 @@ class FastServer {
 public:
     FastServer(std::string local_ip, int local_port);
     ~FastServer();
+    void Close();
 
     void AddService(ServiceOwnership ownership,
                     google::protobuf::Service* service);
     void BuildAndStart();
     int  listen_fd() const { return listen_fd_; }
 
-    void AddEndpoint(uint32_t qp_num, FastRdmaEndpoint* ep);
+    void AddEndpoint(FastRdmaEndpoint* ep);
+    void NotifyEndpointFailed();
 
     void NotifyLargeDone() { large_cv_.notify_all(); }
 
@@ -53,15 +58,21 @@ public:
 private:
     static void SendErrorResponse(FastRdmaEndpoint* ep, uint32_t rpc_id,
                                    ErrorCode error_code);
-    void ReturnRPCResponse(CallBackArgs args);
-    void WaitForLargeWritable(FastRdmaEndpoint* ep);
+    void ReturnRPCResponse(CallBackArgs* args);
+    bool WaitForLargeWritable(FastRdmaEndpoint* ep);
+    void OnEndpointRecycled(EndpointId id);
 
     std::string local_ip_;
     int         local_port_;
     int         listen_fd_{-1};
 
     std::mutex conn_mutex_;
-    std::unordered_map<uint32_t, FastRdmaEndpoint*> conn_map_;
+    std::unordered_set<EndpointId> endpoints_;
+    std::condition_variable recycled_cv_;
+    bool stopping_ = false; // conn_mutex_
+    bool listener_recycled_ = true; // conn_mutex_
+    std::once_flag close_once_;
+    EventDispatcher::Registration listen_registration_ = EventDispatcher::INVALID_REGISTRATION;
 
     std::unordered_map<std::string, ServiceInfo> service_map_;
 
