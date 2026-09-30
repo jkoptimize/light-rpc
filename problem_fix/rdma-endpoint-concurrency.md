@@ -1,7 +1,7 @@
 # RDMA endpoint 并发问题与修复计划
 
 > 创建日期：2026-09-27；更新日期：2026-09-30。
-> 状态：R01、R02、R03 队列协议已实现；R04 生命周期与 R05 注册表已通过移植 brpc `VersionedRefWithId`/`IOEventData` 解决；R06 四 CQ 通知复查已修复，验证与边界见第 7 节。R07、R08、O01 尚未实施。
+> 状态：R01、R02、R03 队列协议已实现；R04 生命周期与 R05 注册表已通过移植 brpc `VersionedRefWithId`/`IOEventData` 解决；R06 四 CQ 通知复查、R07 CQ 事件 ACK 记账已修复，验证与边界见第 7 节。R08、O01 尚未实施。
 > 分析对象：当前工作区的 `src-endpoint/fast_rdma_endpoint.cc` 及相关头文件、事件分发与 channel/server 生命周期。
 > 证据范围：静态源码审查、并发时序推演、非 RDMA 回归及发送队列 AddressSanitizer 检查；尚未通过 RDMA 实机验证，不代表已完成全部线程安全审计。
 
@@ -151,11 +151,13 @@ recv_cq 的既有 CQE 没有被处理
 
 ### R07：CQ 事件 ACK 尾数遗漏
 
+状态：2026-09-30 已修复所有成功获取事件的 ACK 记账，并在 endpoint 最终回收时冲刷不足批量阈值的尾数；RDMA 实机待验证。
+
 位置：`GetAndAckEvents`、`DeallocateResources`。
 
 当前累计至少 128 个事件才批量 ACK，关闭时没有补齐不足阈值的剩余计数。成功获取的事件必须被 ACK，CQ 销毁会等待相关 ACK。
 
-方案：保留运行时批量 ACK；事件处理者退出后统一处理已成功获取但尚未 ACK 的计数。关闭期间如继续获取事件，必须纳入同一记账。区分“已获取事件”和“channel 中尚未获取的通知”，不能猜测数量或重复 ACK。
+方案（已实施）：保留运行时批量 ACK；endpoint 最后一个 CPU 引用释放后，在 CQ/QP 销毁前统一 ACK 已成功获取但尚未 ACK 的各 CQ 计数。成功获取但 CQ 身份异常的事件按 brpc 处理：立即对返回的 CQ 精确 ACK 并告警，然后继续 drain。只记账 `ibv_get_cq_event` 成功返回的事件，不猜测 channel 中未读取的通知数量。
 
 ### R08：可写等待可能丢唤醒
 
@@ -216,7 +218,7 @@ recv_cq 的既有 CQE 没有被处理
 
 ## 4. 分阶段实施计划
 
-以下为最初的阶段划分。2026-09-28 起按用户要求改为每次处理一个问题编号；依赖检查与最终集成验收要求仍保留。R01、R02、R03 队列协议、R04 生命周期、R05 注册表、R06 四 CQ 复查已实施，其余问题待逐项处理。
+以下为最初的阶段划分。2026-09-28 起按用户要求改为每次处理一个问题编号；依赖检查与最终集成验收要求仍保留。R01、R02、R03 队列协议、R04 生命周期、R05 注册表、R06 四 CQ 复查、R07 CQ ACK 记账已实施，其余问题待逐项处理。
 
 | 阶段 | 工作项 | 交付与验收 |
 |---|---|---|
@@ -294,6 +296,7 @@ ctest --test-dir /tmp/light-rpc-endpoint-release --output-on-failure
 | 2026-09-30 | R04：生命周期与退出顺序改用 brpc `VersionedRefWithId`，删除自造 `OperationGate`，endpoint 以 VRefId 安全寻址 | 生命周期/队列/事件测试共 100 项通过；Debug/Release 构建与 CTest 通过；RDMA 实机待验证 |
 | 2026-09-30 | R05：事件注册改用 brpc `IOEventData`，`_fd_map` 加锁、上下文按引用计数回收 | 同上；R05 四个子问题经代码审查确认消除 |
 | 2026-09-30 | R06：四 CQ 重新 arm 后从首个 CQ 全量复查；检查通知 arm 错误；数据面立即写设置 solicited 标志 | 源码时序审查；RDMA 实机待验证 |
+| 2026-09-30 | R07：为异常 CQ 事件补精确 ACK；最终回收时冲刷已获取未确认的事件尾数 | Debug 全量构建；事件记账与回收顺序源码审查；RDMA 实机待验证 |
 
 ### 7.1 R01 修复内容
 
@@ -454,4 +457,13 @@ Debug/Release 均完成全量构建及 CTest：86 项既有单元测试、8 项�
 - 保留接收 CQ solicited-only、发送 CQ all-completions 的通知策略。控制面发送已有 solicited 标志；数据面 `RDMA_WRITE_WITH_IMM` 原先只有 SIGNALED，本次补上 SOLICITED，使远端 `data_recv_cq_` 的 solicited-only 通知能够唤醒 poller。
 - 按 brpc 的事件所有权语义，若扫描期间到达新事件，`MoreReadEvents` 会保留当前消费者继续处理；若交还后才到达，则事件分发器启动下一轮处理。四 CQ 的 arm 后复查覆盖 arm 窗口中已经进入 CQ 的完成项。
 
-验证：Debug 全量构建通过，`git diff --check` 通过；逐项审查四 CQ 在 arm 前/后到达完成、arm 返回错误及消费者交接时序。未运行测试或连接 RDMA 设备，provider 对通知和 solicited 位的实际行为仍待实机验证。R07 的事件 ACK 尾数和 R08 的可写等待协议仍保持未修复。
+验证：Debug 全量构建通过，`git diff --check` 通过；逐项审查四 CQ 在 arm 前/后到达完成、arm 返回错误及消费者交接时序。未运行测试或连接 RDMA 设备，provider 对通知和 solicited 位的实际行为仍待实机验证。R07、R08 各自的验证边界见后续记录。
+
+### 7.11 R07 修复内容与边界
+
+- R04 的资源清理代码已经在销毁每个 CQ 前 ACK 该 CQ 剩余计数；这覆盖 PollCq 已退出后仍不足 128 的批量尾数。此前 R07 文档没有反映这段已经存在的实现。
+- `GetAndAckEvents` 只在 `ibv_get_cq_event` 成功后增加对应 CQ 计数；达到 128 时维持原有批量 ACK。若 get 后续返回其他错误，之前成功 get 的尾数仍保留，随后经 R04 生命周期引用保证在 `BeforeRecycled` 中清理。
+- 成功 get 却返回非 endpoint CQ 时，按 brpc 原实现立即对返回的 CQ ACK 1 次并继续 drain；不把该事件丢出账目，也不将 completion channel 中尚未读取的通知推测成 CQ 事件。brpc 的 `polling_cq` 创建时没有绑定 completion channel，polling 模式也不调用 `GetAndAckEvents`，因此此分支是成功 get 后的通用 ACK 兜底，不是 polling 模式支持路径。
+- 若资源清理时 CQ 指针已为空但 ACK 计数仍非零，触发 CHECK 暴露生命周期/账目不变量破坏；新一代 endpoint 初始化时显式清零四个计数。
+
+验证：Debug 全量构建通过，`git diff --check` 通过；源码审查覆盖每次成功 get 的 endpoint CQ、非 endpoint CQ、128 批量阈值、get 中途报错以及最终回收尾数。未运行测试或 RDMA 实机验证。libibverbs 头文件明确规定每个成功 get 必须最终 ACK，且 destroy CQ 等待这些 ACK；channel 中尚未 get 的通知不计入本地已获取事件数。

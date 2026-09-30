@@ -166,6 +166,7 @@ int FastRdmaEndpoint::OnCreated() {
     sq_imm_window_size_ = RESERVED_WR_NUM;
     sq_current_ = sq_sent_ = sq_unsignaled = rq_received_ = 0;
     send_counter_ = sq_unsignaled_ = unsolicited_ = accumulated_ack_ = 0;
+    send_cq_events = recv_cq_events = data_send_cq_events = data_recv_cq_events = 0;
     active_large_transfers_.store(0, std::memory_order_relaxed);
     _remote_ip.clear();
     _remote_port = 0;
@@ -650,20 +651,34 @@ int FastRdmaEndpoint::BringUpDataQp(uint16_t lid, ibv_gid gid, uint32_t remote_q
 
 void FastRdmaEndpoint::DeallocateResources() {
     // Owner has joined CPU users, or initialization has not published resources.
-    // Match brpc's non-pooled teardown: destroy QPs before returning buffers.
-    // Destruction failure must not be followed by releasing DMA-visible memory.
+    // Acknowledge every event already fetched from the channel before CQ/QP
+    // teardown, matching brpc's RdmaEndpoint::DeallocateResources ordering.
+    auto ack_cq_events = [](ibv_cq* cq, int& events) {
+        if (cq) {
+            ibv_ack_cq_events(cq, events);
+            events = 0;
+        } else {
+            CHECK_EQ(0, events);
+        }
+    };
+    ack_cq_events(send_cq_, send_cq_events);
+    ack_cq_events(recv_cq_, recv_cq_events);
+    ack_cq_events(data_send_cq_, data_send_cq_events);
+    ack_cq_events(data_recv_cq_, data_recv_cq_events);
+
+    // Destroy QPs before returning buffers; a destroy failure must not be
+    // followed by releasing DMA-visible memory.
     if (data_qp_) { CHECK_EQ(0, ibv_destroy_qp(data_qp_)); data_qp_ = nullptr; }
     if (qp_) { CHECK_EQ(0, ibv_destroy_qp(qp_)); qp_ = nullptr; }
-    auto destroy_cq = [](ibv_cq*& cq, int& events) {
+    auto destroy_cq = [](ibv_cq*& cq) {
         if (!cq) return;
-        if (events) { ibv_ack_cq_events(cq, events); events = 0; }
         CHECK_EQ(0, ibv_destroy_cq(cq));
         cq = nullptr;
     };
-    destroy_cq(data_send_cq_, data_send_cq_events);
-    destroy_cq(data_recv_cq_, data_recv_cq_events);
-    destroy_cq(send_cq_, send_cq_events);
-    destroy_cq(recv_cq_, recv_cq_events);
+    destroy_cq(data_send_cq_);
+    destroy_cq(data_recv_cq_);
+    destroy_cq(send_cq_);
+    destroy_cq(recv_cq_);
     if (comp_channel_) {
         CHECK_EQ(0, ibv_destroy_comp_channel(comp_channel_));
         comp_channel_ = nullptr;
@@ -1155,9 +1170,12 @@ int FastRdmaEndpoint::GetAndAckEvents() {
     while (true) {
         ibv_cq* cq = nullptr;
         void*   ctx = nullptr;
-        if (ibv_get_cq_event(comp_channel_, &cq, &ctx) != 0) {
+        const int rc = ibv_get_cq_event(comp_channel_, &cq, &ctx);
+        if (rc != 0) {
             const int saved_errno = errno;
             if (saved_errno == EINTR) continue;
+            // AllocateResources makes this fd nonblocking. EAGAIN therefore
+            // means the channel has been drained for this pass (as in brpc).
             if (saved_errno == EAGAIN) break;
             PLOG(ERROR) << "Fail to get cq event";
             errno = saved_errno;
@@ -1167,7 +1185,12 @@ int FastRdmaEndpoint::GetAndAckEvents() {
         else if (cq == recv_cq_)       ++recv_cq_events;
         else if (cq == data_send_cq_)  ++data_send_cq_events;
         else if (cq == data_recv_cq_)  ++data_recv_cq_events;
-        else PLOG(ERROR) << "Unknown CQ event";
+        else {
+            // Match brpc: a successful get creates an ACK obligation even
+            // for an unexpected CQ. Ack it immediately, then keep draining.
+            ibv_ack_cq_events(cq, 1);
+            LOG(WARNING) << "Unexpected CQ event from cq=" << cq;
+        }
     }
     if (send_cq_events >= MAX_CQ_EVENTS) {
         ibv_ack_cq_events(send_cq_, send_cq_events);

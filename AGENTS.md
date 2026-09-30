@@ -24,3 +24,8 @@ light-rpc（构建名 FAST-RPC）是一款基于 brpc RDMA 发送语义的轻量
    - 否则先给出 brpc 分析报告，再决定最小移植范围或替代方案，并说明与原版的差异、正确性依据与性能影响。
 
 基础设施的判定以 `src-bthread/`（bthread_id、ResourcePool、butex、object_pool、list_of_abafree_id 等）以及 `src-common/` 当前已落地内容为准。
+
+## RDMA CQ 模式范围
+
+- 当前项目只实现基于 completion channel 的事件驱动 CQ；brpc `rdma_use_polling` 对应的 `polling_cq` 和 poller 线程池尚未移植，不要顺带增加 polling 专属分支或基础设施。只有用户明确启动 polling 模式工作时才纳入范围。
+- 这不改变 verbs 的事件 ACK 义务：凡 `ibv_get_cq_event` 成功返回的事件都必须恰好 ACK 一次，包括意外返回的 CQ；completion channel 中尚未成功取出的通知不得猜测或计入 ACK 数。
