@@ -717,7 +717,9 @@ ssize_t FastRdmaEndpoint::CutSegFromIOBuf(IOBuf* buf,
     wr.opcode              = IBV_WR_RDMA_WRITE_WITH_IMM;
     wr.imm_data            = htonl(imm_rkey);
     wr.wr_id               = rpc_id;
-    wr.send_flags          = IBV_SEND_SIGNALED;
+    // data_recv_cq_ is armed for solicited completions. Mark the immediate
+    // write solicited so its receive completion can wake the peer's poller.
+    wr.send_flags          = IBV_SEND_SOLICITED | IBV_SEND_SIGNALED;
     wr.wr.rdma.remote_addr = remote_addr;
     wr.wr.rdma.rkey        = remote_rkey;
     wr.sg_list             = sglist;
@@ -1348,12 +1350,21 @@ void FastRdmaEndpoint::PollCq(FastRdmaEndpoint* ep) {
             }
             // All 4 CQs drained.
             if (!notified) {
-                ibv_req_notify_cq(ep->send_cq_, 0);
-                ibv_req_notify_cq(ep->recv_cq_, 1);
-                ibv_req_notify_cq(ep->data_send_cq_, 0);
-                ibv_req_notify_cq(ep->data_recv_cq_, 1);
+                // Keep the original solicited-only policy on receive CQs.
+                // A notification arm is one-shot, so after arming every CQ
+                // restart the scan at the first CQ. An event may have landed
+                // on any CQ while notifications were disarmed.
+                const bool solicited_only[4] = {true, true, false, false};
+                for (int i = 0; i < 4; ++i) {
+                    const int rc = ibv_req_notify_cq(cqs[i], solicited_only[i]);
+                    if (rc != 0) {
+                        ep->SetFailed(rc);
+                        return;
+                    }
+                }
                 notified = true;
-                continue;  // re-poll data_send_cq after arm
+                phase = 0;
+                continue;  // re-poll all four CQs after arm
             }
             // Still empty after arm — check for new events.
             if (!ep->MoreReadEvents(&progress)) break;

@@ -1,7 +1,7 @@
 # RDMA endpoint 并发问题与修复计划
 
-> 创建日期：2026-09-27；更新日期：2026-09-28。
-> 状态：用户已要求按编号、每次一个问题实施。R01、R02 与 R03 队列协议已实现，验证与边界见第 7 节；R04～R08、O01 尚未实施。
+> 创建日期：2026-09-27；更新日期：2026-09-30。
+> 状态：R01、R02、R03 队列协议已实现；R04 生命周期与 R05 注册表已通过移植 brpc `VersionedRefWithId`/`IOEventData` 解决；R06 四 CQ 通知复查已修复，验证与边界见第 7 节。R07、R08、O01 尚未实施。
 > 分析对象：当前工作区的 `src-endpoint/fast_rdma_endpoint.cc` 及相关头文件、事件分发与 channel/server 生命周期。
 > 证据范围：静态源码审查、并发时序推演、非 RDMA 回归及发送队列 AddressSanitizer 检查；尚未通过 RDMA 实机验证，不代表已完成全部线程安全审计。
 
@@ -62,7 +62,7 @@ P0：可能破坏内存安全、并发所有权或基本进展。P1：特定时�
 
 风险涉及 `read_buf_`、消息解析器、收发索引、事件 ACK 计数等共享状态。部分错误路径直接返回，还可能遗留正数 `_nevent`。
 
-方案：恢复原版事件计数、内存序及交接协议；逐条检查正常退出、停止、读取事件失败、轮询失败和任务启动失败。失败不能靠无条件清零掩盖，必须进入统一失败流程，避免同时释放处理权和继续访问共享状态。
+方案（已实施）：恢复原版事件计数、内存序及交接协议；逐条检查正常退出、停止、读取事件失败、轮询失败和任务启动失败。失败不能靠无条件清零掩盖，必须进入统一失败流程，避免同时释放处理权和继续访问共享状态。
 
 注意：R02 可能先阻塞执行并掩盖 R01；修复 R02 后仍必须验证 R01 的交接行为。
 
@@ -74,7 +74,7 @@ P0：可能破坏内存安全、并发所有权或基本进展。P1：特定时�
 
 修复前 completion channel 创建后直接注册 `EPOLLIN | EPOLLET`，但未设置 `O_NONBLOCK`。获取事件的循环却假定最终返回 `EAGAIN`。默认阻塞行为下，现有通知取完后会等待新通知，且此时尚未进入后面的 CQ 轮询和重新开启通知流程。
 
-方案：注册前以 `F_GETFL` 获取原 flags，再设置 `flags | O_NONBLOCK`，检查所有返回值；`EINTR` 重试，`EAGAIN` 结束本轮获取，其他错误进入统一失败处理。初始化失败必须回滚已创建的资源和事件注册。
+方案（已实施）：注册前以 `F_GETFL` 获取原 flags，再设置 `flags | O_NONBLOCK`，检查所有返回值；`EINTR` 重试，`EAGAIN` 结束本轮获取，其他错误进入统一失败处理。初始化失败必须回滚已创建的资源和事件注册。
 
 依据：libibverbs 的 `ibv_get_cq_event` 文档及非阻塞示例，见参考资料。
 
@@ -97,11 +97,13 @@ brpc 使用 `UNCONNECTED` 标识尚未连接完成的节点，并在消费时处
 
 错误路径也存在缺口：`StartWrite` 直接清空 `_write_head` 可覆盖并发提交；`KeepWrite` 仅释放当前可见链表，未完整处理原子队头与并发生产者。
 
-方案：对照 brpc 成套恢复节点初始化、发布、连接、消费等待、反转、失败排空及回收协议，核对原子访问与必要依赖。不能仅增加一个哨兵值或一次 yield。明确失败期间是否接受请求，每个已接受请求必须完成或得到失败结果，且只回收一次。
+方案（已实施）：对照 brpc 成套恢复节点初始化、发布、连接、消费等待、反转、失败排空及回收协议，核对原子访问与必要依赖。不能仅增加一个哨兵值或一次 yield。明确失败期间是否接受请求，每个已接受请求必须完成或得到失败结果，且只回收一次。
 
 原版允许消费者等待尚未连接的节点；不能将整个写执行流程描述为 wait-free。
 
 ### R04：生命周期和退出顺序不安全
+
+状态：2026-09-30 已按 brpc `VersionedRefWithId` 成套移植解决，替换原先自造的 `OperationGate`；详见第 7.9 节。RDMA 实机待验证。
 
 位置：析构函数、`DeallocateResources`、握手回调，以及 channel/server 的析构和事件注销路径。
 
@@ -113,23 +115,25 @@ brpc 使用 `UNCONNECTED` 标识尚未连接完成的节点，并在消费时处
 4. 服务端握手失败在线程计数减一前 `delete ep`，析构等待包含当前线程的计数归零，形成自等待。
 5. `FastChannel` 析构持有 `pending_mutex_` 时删除 endpoint；若退出中的消息回调也需要该锁，等待处理线程退出可能形成锁依赖死锁。
 
-方案：引入明确的停止入口与安全回收边界。操作和回调在访问对象前必须取得有效生命周期引用；不能先解引用可能悬空的 endpoint，再增加引用。处理者可报告失败、请求停止，由安全的所有者完成最终回收，不能等待自身退出。
+方案（已实施）：按 brpc `VersionedRefWithId` 成套移植，替代原自造 `OperationGate`。`FastRdmaEndpoint` 改为 CRTP 继承 `VersionedRefWithId`，实现 `OnCreated`/`OnFailed`/`BeforeRecycled`；endpoint 以 `EndpointId`(VRefId) 安全寻址，回调/工作线程通过 `Address`/`ReAddress` 持有引用，最后一次解引用时 `BeforeRecycled` 统一释放资源并回调 owner。`FastChannel`/`FastServer` 持 `EndpointId` 并在关闭时等待回收回调，去掉 reaper 线程与轮询 `Wait()`。原自造 `operation_gate.h` 已删除。
 
 详细资源退出顺序见第 3 节。TCP 握手、连接失败、server 关闭、channel 关闭必须纳入同一审查，不能只保护 comp channel。
 
 ### R05：注册表与事件上下文回收
 
+状态：2026-09-30 已按 brpc `IOEventData` 成套移植解决；详见第 7.9 节。RDMA 实机待验证。
+
 位置：`EventDispatcher::RegisterEvent`、`UnregisterEvent`、`RunEpollLoop`。
 
 多个连接和握手线程可同时执行 `_fd_map[fd] = ctx`，当前没有容器同步。注销只执行 epoll DEL，上下文保留至 dispatcher 析构；fd 复用会覆盖 map 项，旧上下文可能无法回收。头文件关于注销即释放上下文的注释也与实现不一致。
 
-方案：低频注册管理采用 mutex 或事件线程命令队列；将“注册失效”和“上下文可回收”分开。推荐在事件线程统一执行注销和批次回收，通过 eventfd 唤醒；事件线程自身发起注销时不得同步等待自己。
-
-事件上下文需关联稳定的注册身份及 endpoint 生命周期引用，不能只凭整数 fd 判断归属。无论采用何种方案，都要覆盖 epoll 已取出事件、同批次残留事件和 fd 复用；不能用固定延时代替安全回收证明。
+方案（已实施）：按 brpc `IOEventData` 成套移植。epoll 事件数据存 `VRefId`，`Dispatch` 先 `IOEventData::Address` 再回调；`RegisterEvent`/`UnregisterEvent` 用 `_mutex` 保护 `_fd_map`（冷路径），热路径无锁；注销以 `SetFailedById` 使 id 失效、由引用计数驱动回收，`on_recycled` 通知 owner。原四个子问题（容器竞争、上下文泄漏、fd 复用覆盖、身份与生命周期引用）均已消除，无需再采用“事件线程命令队列 + eventfd”方案。
 
 ### R06：四 CQ 的通知与复查没有闭合
 
-位置：`PollCq`，当前约第 1098～1116 行。
+状态：2026-09-30 已修复四 CQ 全量复查和通知错误处理；数据面 RDMA write with immediate 已设置 solicited 标志，与接收 CQ 的 solicited-only 通知策略匹配。RDMA 实机待验证。
+
+位置：`PollCq`，重新开启通知及 arm 后复查处（当前约第 1350 行）。
 
 ```text
 检查 recv_cq 为空
@@ -141,7 +145,7 @@ recv_cq 的既有 CQE 没有被处理
 
 通知是一次性的；重新开启通知不会为已有 CQE 补发事件。原有四 CQ 扩展必须建立完整的“开启通知后复查”流程。
 
-方案：维护一轮覆盖全部四个 CQ 的复查状态。开启通知后从第一个 CQ 开始复查，只有全部满足退出条件后才能交还事件处理权；检查每次 `ibv_req_notify_cq` 的返回值。保留 solicited 通知的原有意图，并核对所有对应发送路径是否设置所需标志。
+方案（已实施）：维护一轮覆盖全部四个 CQ 的复查状态。开启通知后从第一个 CQ 开始复查，只有全部满足退出条件后才能交还事件处理权；检查每次 `ibv_req_notify_cq` 的返回值。保留 solicited-only 接收 CQ 通知策略，并确保数据面 `RDMA_WRITE_WITH_IMM` 设置 solicited 标志。
 
 不得简单机械地重置 phase 而忽略 notified 的更新条件，避免产生永久重启扫描或遗漏某个 CQ 的新窗口。
 
@@ -212,7 +216,7 @@ recv_cq 的既有 CQE 没有被处理
 
 ## 4. 分阶段实施计划
 
-以下为最初的阶段划分。2026-09-28 起按用户要求改为每次处理一个问题编号；依赖检查与最终集成验收要求仍保留。R01、R02 和 R03 队列协议已实施，其余问题待逐项处理。
+以下为最初的阶段划分。2026-09-28 起按用户要求改为每次处理一个问题编号；依赖检查与最终集成验收要求仍保留。R01、R02、R03 队列协议、R04 生命周期、R05 注册表、R06 四 CQ 复查已实施，其余问题待逐项处理。
 
 | 阶段 | 工作项 | 交付与验收 |
 |---|---|---|
@@ -287,6 +291,9 @@ ctest --test-dir /tmp/light-rpc-endpoint-release --output-on-failure
 | 2026-09-28 | R01：恢复事件交接、补齐 CQ 读取/轮询失败的停止状态及线程创建异常处理 | 6 个纯逻辑测试通过；Debug/Release 全量构建及 CTest 通过；RDMA 实机待验证 |
 | 2026-09-28 | R02：completion channel 非阻塞设置、EINTR 重试、初始化错误检查与回滚 | 新增 4 个 Linux fd 测试；Debug/Release 全量构建及 CTest 通过；RDMA 实机待验证 |
 | 2026-09-28 | R03：UNCONNECTED 发布协议、失败循环排空、停止后拒绝写入及等待握手请求的清理 | 新增 8 个队列测试；Debug/Release 构建与 CTest、队列 ASan 检查通过；完整失败通知与生命周期待 R04 |
+| 2026-09-30 | R04：生命周期与退出顺序改用 brpc `VersionedRefWithId`，删除自造 `OperationGate`，endpoint 以 VRefId 安全寻址 | 生命周期/队列/事件测试共 100 项通过；Debug/Release 构建与 CTest 通过；RDMA 实机待验证 |
+| 2026-09-30 | R05：事件注册改用 brpc `IOEventData`，`_fd_map` 加锁、上下文按引用计数回收 | 同上；R05 四个子问题经代码审查确认消除 |
+| 2026-09-30 | R06：四 CQ 重新 arm 后从首个 CQ 全量复查；检查通知 arm 错误；数据面立即写设置 solicited 标志 | 源码时序审查；RDMA 实机待验证 |
 
 ### 7.1 R01 修复内容
 
@@ -416,3 +423,35 @@ Debug/Release 均完成全量构建及 CTest：86 项既有单元测试、8 项�
 失败状态继续在本项目的停止检查中处理；本次不把 release/acquire 理解为“每次读取必然得到最新值”，也不宣称已建立跨平台的完整生命周期证明。新增移植规则见项目根目录 [CLAUDE.md](../CLAUDE.md)：偏离 brpc 实现必须先有明确的问题场景和最小改动依据，不能默认增强同步机制。
 
 恢复内存序后重新完成 Debug/Release 全量构建，两个配置的全部 5 个 CTest 测试目标均通过，包含 8 项队列测试。未进行性能对比，不以测试通过推断所有优化选项或平台上的正确性。
+
+### 7.9 R04/R05 修复内容：移植 brpc 版本化引用与事件数据
+
+对照 brpc 版本仍为 `d688e7550be4b4c41b9a4dc55add2a2c75be1296`。本轮将原先自造的 `OperationGate`（停止位 + 引用计数 + 轮询 `Wait()`）整体替换为 brpc 的 `VersionedRefWithId`/`IOEventData`，并新增 `butil/type_traits.h`、`butil/class_name.{h,cpp}`、`butil/string_printf.{h,cpp}`、`inc/versioned_ref_with_id.h` 等基础设施（均照搬 brpc，仅 namespace 适配）。
+
+**R04（生命周期）：**
+
+- `FastRdmaEndpoint` 改为 CRTP 继承 `VersionedRefWithId`，实现 `OnCreated`（复位状态）、`OnFailed`（置停 + 注销事件 + 通知失败 handler）、`BeforeRecycled`（排空写队列 → 注销 → 关 fd → 销毁资源 → 回调 owner）。
+- endpoint 由 `EndpointId`(VRefId) 安全寻址；回调/工作线程通过 `Address`/`ReAddress` 持有 `EndpointUniquePtr` 引用，最后一次解引用触发回收，不再需要线程计数或轮询等待。
+- `FastChannel` 持 `EndpointId`，`Close()` 等待回收回调；`FastServer` 持 `unordered_set<EndpointId>`，以 `SetRecycleHandler → OnEndpointRecycled` 移除并在关闭时等待集合清空，去掉 reaper 线程。
+- 删除 `inc/operation_gate.h` 与 `test/unit/test_operation_gate.cc`。
+
+**R05（事件注册与上下文回收）：**
+
+- `EventDispatcher` 改为 brpc `IOEventData` 模型：epoll 事件数据存 `VRefId`，`Dispatch` 先 `IOEventData::Address` 再回调，`on_recycled` 通知 owner。
+- `RegisterEvent`/`UnregisterEvent` 用 `_mutex` 保护 `_fd_map`；`RegisterEvent` 对已存在 fd 返回 `EEXIST`，`UnregisterEvent` 校验注册身份，杜绝 fd 复用覆盖。
+- 注销以 `SetFailedById` 使 id 失效并由引用计数驱动回收，分离“注册失效”与“上下文可回收”。
+
+**验证：**
+
+- `unit_tests` 100 项（26 suite）、`rdma_write_queue_tests` 8 项、三种日志模式测试全部通过；`OperationGate` 测试已随实现删除。
+- R05 四个子问题经代码审查确认消除：容器同步、上下文回收、fd 复用覆盖、稳定身份 + 生命周期引用。
+- 生命周期语义从“轮询等待线程退出”变为“引用计数驱动销毁”，正确性前提是每个任务在访问前都持引用；已逐条核对 `OnCompChannelEvent`/`OnServerHandshake`/`OnClientHandshake`/`OnProcessRequest`/`KeepWrite`/`PollCq`。RDMA 实机验证仍待完成。
+
+### 7.10 R06 修复内容与边界
+
+- 原问题确实仍存在：PollCq 四个 CQ 都重新 arm 后 `phase` 仍为 3，因此只复查 `data_send_cq_`；先前已检查为空的 CQ 可能在 arm 前后产生 CQE 而被遗漏，直到后续事件才再次触发处理。
+- 重新 arm 时按 poll 顺序 `recv_cq_`、`data_recv_cq_`、`send_cq_`、`data_send_cq_` 检查返回值；任一失败立即 `SetFailed(rc)`。全部成功后将 `phase` 复位到 0，重新扫描全部 CQ，之后才通过 `MoreReadEvents` 交还事件处理权。
+- 保留接收 CQ solicited-only、发送 CQ all-completions 的通知策略。控制面发送已有 solicited 标志；数据面 `RDMA_WRITE_WITH_IMM` 原先只有 SIGNALED，本次补上 SOLICITED，使远端 `data_recv_cq_` 的 solicited-only 通知能够唤醒 poller。
+- 按 brpc 的事件所有权语义，若扫描期间到达新事件，`MoreReadEvents` 会保留当前消费者继续处理；若交还后才到达，则事件分发器启动下一轮处理。四 CQ 的 arm 后复查覆盖 arm 窗口中已经进入 CQ 的完成项。
+
+验证：Debug 全量构建通过，`git diff --check` 通过；逐项审查四 CQ 在 arm 前/后到达完成、arm 返回错误及消费者交接时序。未运行测试或连接 RDMA 设备，provider 对通知和 solicited 位的实际行为仍待实机验证。R07 的事件 ACK 尾数和 R08 的可写等待协议仍保持未修复。
