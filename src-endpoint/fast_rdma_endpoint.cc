@@ -10,6 +10,8 @@
 #include <new>
 #include <thread>
 #include <system_error>
+#include "butex.h"
+#include "butil/time.h"
 
 #include "event_dispatcher.h"
 #include "fast_block_pool.h"
@@ -145,7 +147,17 @@ bool HelloNegotiationValid(const HelloMessage& msg) {
 // ============================================================
 
 FastRdmaEndpoint::FastRdmaEndpoint(Forbidden f)
-    : VersionedRefWithId<FastRdmaEndpoint>(f) {}
+    : VersionedRefWithId<FastRdmaEndpoint>(f) {
+    // Like Socket::_epollout_butex, this belongs to the pooled object and is
+    // retained across endpoint generations.
+    writable_butex_ = butex_create_checked<std::atomic<int>>();
+    CHECK(writable_butex_ != nullptr);
+    writable_butex_->store(0, std::memory_order_relaxed);
+}
+
+FastRdmaEndpoint::~FastRdmaEndpoint() {
+    butex_destroy(writable_butex_);
+}
 
 int FastRdmaEndpoint::OnCreated() {
     _write_error.store(0, std::memory_order_relaxed);
@@ -176,11 +188,10 @@ int FastRdmaEndpoint::OnCreated() {
 
 void FastRdmaEndpoint::OnFailed(int error) {
     _write_error.store(error, std::memory_order_release);
-    {
-        std::lock_guard<std::mutex> lock(send_mutex_);
-        _stop.store(true, std::memory_order_release);
-    }
-    send_cv_.notify_all();
+    _stop.store(true, std::memory_order_release);
+    // Socket::OnFailed wakes every waiter, including waits for shutdown.
+    writable_butex_->fetch_add(1, std::memory_order_relaxed);
+    butex_wake_all(writable_butex_);
     // Address rejects this generation already. Existing callbacks/workers keep
     // resources alive with their references; unregister must not join them.
     {
@@ -277,10 +288,27 @@ bool FastRdmaEndpoint::IsWritable() const {
 }
 
 void FastRdmaEndpoint::WaitForWritable() {
-    std::unique_lock<std::mutex> lock(send_mutex_);
-    send_cv_.wait(lock, [this] {
-        return IsWritable() || _stop.load(std::memory_order_relaxed);
-    });
+    // Match brpc KeepWrite: snapshot the wake generation before checking the
+    // window. butex_wait rechecks that generation while registering the waiter,
+    // so a wake between this check and blocking cannot be lost.
+    const int expected = writable_butex_->load(std::memory_order_acquire);
+    if (_stop.load(std::memory_order_relaxed) || IsWritable()) return;
+
+    // Like brpc's WAIT_EPOLLOUT_TIMEOUT_MS, periodically retry even when a
+    // small window restoration is intentionally below the wake threshold.
+    const timespec abstime = butil::milliseconds_from_now(50);
+
+    if (butex_wait(writable_butex_, expected, &abstime) != 0 &&
+        errno != EAGAIN && errno != ETIMEDOUT) {
+        const int saved_errno = errno;
+        SetFailed(saved_errno ? saved_errno : EIO);
+    }
+}
+
+void FastRdmaEndpoint::WakeForWritable() {
+    writable_butex_->fetch_add(1, std::memory_order_release);
+    // Like Socket::WakeAsEpollOut, enqueue waiters without yielding the CQ worker.
+    butex_wake_except(writable_butex_, INVALID_BTHREAD);
 }
 
 int FastRdmaEndpoint::SendAck(int num) {
@@ -1494,7 +1522,7 @@ ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {
         if (remote_rq_window_size_.load(std::memory_order_relaxed) >= local_window_capacity_ / 8) {
             // Do not wake up writing thread right after polling IBV_WC_SEND.
             // Otherwise the writing thread may switch to background too quickly.
-            send_cv_.notify_all();
+            WakeForWritable();
         }
         return 0;
 
@@ -1520,7 +1548,7 @@ ssize_t FastRdmaEndpoint::HandleCompletion(ibv_wc& wc) {
                 (remote_rq_window_size >= wnd_thresh || acks >= wnd_thresh)) {
                 // Do not wake up writing thread right after _remote_rq_window_size > 0.
                 // Otherwise the writing thread may switch to background too quickly.
-                send_cv_.notify_all();
+                WakeForWritable();
             }
         }
         // We must re-post recv WR

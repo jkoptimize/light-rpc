@@ -215,7 +215,7 @@ inline void jump_stack(ContextualStack* from, ContextualStack* to) {
 
 }  // namespace fast
 
-namespace butil {
+namespace fast::butil {
 
 template <> struct ObjectPoolBlockMaxItem<
     fast::StackFactory<fast::LargeStackClass>::Wrapper> {

@@ -22,6 +22,7 @@
 #include "inc/fast_log.h"
 #include <pthread.h>
 #include <set>
+#include <climits>
 #include <regex>
 #include <sys/syscall.h>                   // SYS_gettid
 #include "butil/scoped_lock.h"             // BAIDU_SCOPED_LOCK
@@ -253,27 +254,23 @@ int TaskControl::parse_cpuset(std::string value, std::vector<unsigned>& cpus) {
         return -1;
     }
     if (std::regex_match(value, match, r)) {
-        for (fast::butil::StringSplitter split(value.data(), ','); split; ++split) {
-            fast::butil::StringPiece cpu_ids(split.field(), split.length());
-            cpu_ids.trim_spaces();
-            fast::butil::StringPiece begin = cpu_ids;
-            fast::butil::StringPiece end = cpu_ids;
-            auto dash = cpu_ids.find('-');
-            if (dash != cpu_ids.npos) {
-                begin = cpu_ids.substr(0, dash);
-                end = cpu_ids.substr(dash + 1);
+        // Cold-path adaptation of brpc StringSplitter to std::string.
+        try {
+            size_t pos = 0;
+            while (pos < value.size()) {
+                const auto comma = value.find(',', pos);
+                const auto token = value.substr(pos, comma - pos);
+                const auto dash = token.find('-');
+                const auto first = std::stoull(token.substr(0, dash));
+                const auto last = dash == std::string::npos ? first
+                                  : std::stoull(token.substr(dash + 1));
+                if (first > last || last > UINT_MAX) return -1;
+                for (auto i = first; i <= last; ++i) cpuset.insert(i);
+                if (comma == std::string::npos) break;
+                pos = comma + 1;
             }
-            unsigned first = UINT_MAX;
-            unsigned last = 0;
-            int ret;
-            ret = fast::butil::StringSplitter(begin, '\t').to_uint(&first);
-            ret = ret | fast::butil::StringSplitter(end, '\t').to_uint(&last);
-            if (ret != 0 || first > last) {
-                return -1;
-            }
-            for (auto i = first; i <= last; ++i) {
-                cpuset.insert(i);
-            }
+        } catch (const std::exception&) {
+            return -1;
         }
         cpus.assign(cpuset.begin(), cpuset.end());
         return 0;
@@ -319,12 +316,10 @@ std::string TaskControl::stack_trace(bthread_t tid) {
 }
 #endif // BRPC_BTHREAD_TRACER
 
-extern int stop_and_join_epoll_threads();
 
 void TaskControl::stop_and_join() {
-    // Close epoll threads so that worker threads are not waiting on epoll(
-    // which cannot be woken up by signal_task below)
-    CHECK_EQ(0, stop_and_join_epoll_threads());
+    // The bthread FD/epoll subsystem is not built in light-rpc. Its endpoint
+    // EventDispatcher owns and joins its own epoll thread separately.
 
     // Stop workers
     {
@@ -384,7 +379,7 @@ int TaskControl::_add_group(TaskGroup* g, bthread_tag_t tag) {
 
 void TaskControl::delete_task_group(void* arg) {
     delete(TaskGroup*)arg;
-}s
+}
 
 int TaskControl::_destroy_group(TaskGroup* g) {
     if (NULL == g) {

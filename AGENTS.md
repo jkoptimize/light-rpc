@@ -29,3 +29,8 @@ light-rpc（构建名 FAST-RPC）是一款基于 brpc RDMA 发送语义的轻量
 
 - 当前项目只实现基于 completion channel 的事件驱动 CQ；brpc `rdma_use_polling` 对应的 `polling_cq` 和 poller 线程池尚未移植，不要顺带增加 polling 专属分支或基础设施。只有用户明确启动 polling 模式工作时才纳入范围。
 - 这不改变 verbs 的事件 ACK 义务：凡 `ibv_get_cq_event` 成功返回的事件都必须恰好 ACK 一次，包括意外返回的 CQ；completion channel 中尚未成功取出的通知不得猜测或计入 ACK 数。
+
+## 连接模型范围
+
+- 当前 light-rpc 移植 brpc 的**单连接（长连接）模型**：连接按需建立后持续复用；不关注短连接（`connect_on_create`）和连接池（`SocketPool`/`SocketMap` 复用）的实现，分析或重构时不要引入这两条路径的专属分支。
+- 涉及连接建立、复用与关闭的语义以单连接模型为准。移植重构完成时，需核对当前连接模型实现是否与 brpc 单连接模型基本一致，并确认 Socket 的生命周期处理符合单连接预期（例如：连接失败后的重连/复用、关闭与回收时机、引用计数与 in-flight 请求的清理）。

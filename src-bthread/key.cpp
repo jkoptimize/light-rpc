@@ -21,6 +21,7 @@
 
 #include "inc/fast_log.h"
 #include <pthread.h>
+#include <limits.h>
 
 #include "errno.h"       // EAGAIN
 #include "task_group.h"  // TaskGroup
@@ -75,8 +76,8 @@ static size_t nkey = 0;
 static uint32_t s_free_keys[KEYS_MAX];
 
 // Stats.
-static std::atomic<size_t> nkeytable = BUTIL_STATIC_ATOMIC_INIT(0);
-static std::atomic<size_t> nsubkeytable = BUTIL_STATIC_ATOMIC_INIT(0);
+static std::atomic<size_t> nkeytable {0};
+static std::atomic<size_t> nsubkeytable {0};
 
 // The second-level array.
 // Align with cacheline to avoid false sharing.

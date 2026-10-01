@@ -25,6 +25,7 @@
 #include <iostream>                       // std::ostream
 #include <algorithm>                      // std::max, std::min
 #include <vector>
+#include <cstring>
 #include <atomic>              // std::atomic
 #include <pthread.h>           // pthread_mutex_t, PTHREAD_MUTEX_INITIALIZER
 #include "macros.h"                 // BAIDU_CACHELINE_ALIGNMENT

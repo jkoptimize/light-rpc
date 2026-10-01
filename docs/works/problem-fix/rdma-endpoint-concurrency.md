@@ -1,7 +1,7 @@
 # RDMA endpoint 并发问题与修复计划
 
-> 创建日期：2026-09-27；更新日期：2026-09-30。
-> 状态：R01、R02、R03 队列协议已实现；R04 生命周期与 R05 注册表已通过移植 brpc `VersionedRefWithId`/`IOEventData` 解决；R06 四 CQ 通知复查、R07 CQ 事件 ACK 记账已修复，验证与边界见第 7 节。R08、O01 尚未实施。
+> 创建日期：2026-09-27；更新日期：2026-10-01。
+> 状态：R01～R08 全部修复完成（R08 已按 brpc butex 等待/唤醒语义移植）；O01 为 brpc bthread 移植工作，不属本清单的独立待办。验证与边界见第 7 节。RDMA 实机验证仍待完成。
 > 分析对象：当前工作区的 `src-endpoint/fast_rdma_endpoint.cc` 及相关头文件、事件分发与 channel/server 生命周期。
 > 证据范围：静态源码审查、并发时序推演、非 RDMA 回归及发送队列 AddressSanitizer 检查；尚未通过 RDMA 实机验证，不代表已完成全部线程安全审计。
 
@@ -161,6 +161,8 @@ recv_cq 的既有 CQE 没有被处理
 
 ### R08：可写等待可能丢唤醒
 
+状态：2026-10-01 已按 brpc `_epollout_butex` 等待/唤醒语义成套移植，替换 condition_variable；详见第 7.12 节。RDMA 实机待验证。
+
 位置：`WaitForWritable`、`HandleCompletion`、停止时的 `send_cv_.notify_all()`。
 
 ```text
@@ -172,15 +174,15 @@ recv_cq 的既有 CQE 没有被处理
 
 原子变量保证计数访问的原子性，但不能自动保证条件检查与进入等待之间不丢通知。
 
-方案：优先对照 brpc 原有等待/唤醒协议及依赖，分析完整移植可行性。若当前阶段保留 condition_variable，必须让条件更新、等待登记和通知形成完整同步协议，并说明热路径加锁成本；不能直接认定它与原版等价。
-
-同时核对窗口阈值：若已经可写但未达到通知阈值，必须证明仍存在可靠的后续唤醒来源。停止和失败必须唤醒全部等待者。
+方案（已实施）：按 brpc `Socket` 的 butex 等待/唤醒协议成套移植。`WaitForWritable` 先快照 `writable_butex_` 代数，`butex_wait` 在登记等待者时重核该代数，避免“检查后、进入等待前”丢唤醒；配 50ms 超时（对应 `WAIT_EPOLLOUT_TIMEOUT_MS`）兜底低于通知阈值的窗口恢复。`WakeForWritable` 用 `fetch_add + butex_wake_except`（对应 `WakeAsEpollOut`），`OnFailed` 用 `butex_wake_all` 唤醒全部等待者（含停止等待）。
 
 ### O01：线程创建与调度开销
 
+状态：不属于本清单的独立问题，即正在进行的 brpc bthread 移植工作；随 bthread 接入一并解决，不再作为本清单待办跟踪。
+
 当前每轮取得处理权都会创建 pthread 并 detach，握手和后台发送也使用临时线程。可能增加创建、调度和缓存开销，但尚未测量，不能给出性能下降比例。
 
-方案：完成正确性修复后单独评估复用执行线程；bthread 核心及依赖编译、验证完成后再考虑接入。会阻塞的握手或发送任务不能直接塞入数量有限的公共线程池，否则可能阻塞负责恢复进展的任务。
+方案：接入 bthread（见 `docs/works/bthread/bthread-port-design.md`、`docs/works/bthread/bthread-learning-plan.md`、`docs/knowledge/bthread-port-review.md`）后，用复用执行线程替换每轮 detach pthread。会阻塞的握手或发送任务不能直接塞入数量有限的公共线程池，否则可能阻塞负责恢复进展的任务。
 
 ## 3. 整体方案
 
@@ -297,6 +299,7 @@ ctest --test-dir /tmp/light-rpc-endpoint-release --output-on-failure
 | 2026-09-30 | R05：事件注册改用 brpc `IOEventData`，`_fd_map` 加锁、上下文按引用计数回收 | 同上；R05 四个子问题经代码审查确认消除 |
 | 2026-09-30 | R06：四 CQ 重新 arm 后从首个 CQ 全量复查；检查通知 arm 错误；数据面立即写设置 solicited 标志 | 源码时序审查；RDMA 实机待验证 |
 | 2026-09-30 | R07：为异常 CQ 事件补精确 ACK；最终回收时冲刷已获取未确认的事件尾数 | Debug 全量构建；事件记账与回收顺序源码审查；RDMA 实机待验证 |
+| 2026-10-01 | R08：可写等待改用 brpc butex 等待/唤醒语义（`writable_butex_` + `butex_wait`/`butex_wake_except`/`butex_wake_all`），替换 condition_variable | 新增确定性测试 `rdma_writable_tests`（`--wrap=butex_wait`）8 项并修正旧用例；全量 116 用例通过；RDMA 实机待验证 |
 
 ### 7.1 R01 修复内容
 
@@ -467,3 +470,14 @@ Debug/Release 均完成全量构建及 CTest：86 项既有单元测试、8 项�
 - 若资源清理时 CQ 指针已为空但 ACK 计数仍非零，触发 CHECK 暴露生命周期/账目不变量破坏；新一代 endpoint 初始化时显式清零四个计数。
 
 验证：Debug 全量构建通过，`git diff --check` 通过；源码审查覆盖每次成功 get 的 endpoint CQ、非 endpoint CQ、128 批量阈值、get 中途报错以及最终回收尾数。未运行测试或 RDMA 实机验证。libibverbs 头文件明确规定每个成功 get 必须最终 ACK，且 destroy CQ 等待这些 ACK；channel 中尚未 get 的通知不计入本地已获取事件数。
+
+### 7.12 R08 修复内容与边界
+
+对照 brpc `Socket` 的 `_epollout_butex` / `WaitEpollOut` / `WakeAsEpollOut` / `OnFailed`，把 `FastRdmaEndpoint` 的阻塞等待从 `condition_variable` + `send_mutex_` 换成 butex：
+
+- `writable_butex_` 在构造函数中 `butex_create_checked<std::atomic<int>>()` 创建，析构中 `butex_destroy`；属于池化对象、跨 endpoint 代际保留（对应 `Socket::_epollout_butex`）。
+- `WaitForWritable`：先 `load` 快照 butex 代数，检查 `_stop`/`IsWritable` 后 `butex_wait(butex, expected, abstime)`；`butex_wait` 在登记等待者时重核该代数，因此“检查后、进入等待前”的窗口不会丢唤醒。`abstime` 为 50ms 绝对时限，对应 brpc `WAIT_EPOLLOUT_TIMEOUT_MS`，用于周期性重试低于通知阈值的窗口恢复。
+- `WakeForWritable`：`fetch_add(1, release) + butex_wake_except(INVALID_BTHREAD)`，对应 `Socket::WakeAsEpollOut`；`OnFailed` 用 `butex_wake_all` 唤醒全部等待者（含停止等待）。
+- `HandleCompletion` 的 SEND 完成与带 IMM 的 RECV 完成路径，把原来的 `send_cv_.notify_all()` 改为 `WakeForWritable()`，保留“阈值之上才唤醒”的原判断。
+
+验证：新增独立目标 `rdma_writable_tests`（`test/endpoint_writable_test.cc`），用 `--wrap=butex_wait` + `WaitGate` 确定性覆盖“窗口恢复发生在谓词与 butex_wait 之间”“失败发生在该窗口”“低于阈值恢复经超时重试”“失败前不进入等待”等竞态；`test_rdma_endpoint.cc` 的旧流控用例按 50ms 超时语义修正（sleep 100ms→20ms）。Debug 全量构建通过，`ctest` 6 个目标全绿（`unit_tests` 100、`rdma_write_queue_tests` 8、`rdma_writable_tests` 8、日志 3，共 116 用例）。未做性能对比，RDMA 实机待验证。

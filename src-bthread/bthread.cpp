@@ -413,7 +413,7 @@ int bthread_getconcurrency_by_tag(bthread_tag_t tag) {
 int bthread_setconcurrency_by_tag(int num, bthread_tag_t tag) {
     if (tag == BTHREAD_TAG_INVALID) {
         return 0;
-    } else if (tag < BTHREAD_TAG_DEFAULT || tag >= FastBthreadConfig::Get().task_group_ntags) {
+    } else if (tag < BTHREAD_TAG_DEFAULT || tag >= fast::FastBthreadConfig::Get().task_group_ntags) {
         return EINVAL;
     }
     if (num < BTHREAD_MIN_CONCURRENCY || num > BTHREAD_MAX_CONCURRENCY) {

@@ -22,6 +22,9 @@
 #ifndef  BTHREAD_MUTEX_H
 #define  BTHREAD_MUTEX_H
 
+#include <mutex>
+#include <system_error>
+#include <cstring>
 #include "inc/fast_log.h"
 #include "types.h"
 #include "butil/scoped_lock.h"

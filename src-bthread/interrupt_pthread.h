@@ -17,32 +17,19 @@
 
 // bthread - An M:N threading library to make applications more concurrent.
 
-// Date: Wed Jul 30 11:47:19 CST 2014
+// Date: Tue Jul 10 17:40:58 CST 2012
 
-#include "errno.h"
-#include "butil/build_config.h"
+#ifndef BTHREAD_INTERRUPT_PTHREAD_H
+#define BTHREAD_INTERRUPT_PTHREAD_H
 
-// Define errno in bthread/errno.h
-extern const int ESTOP = -20;
+#include <pthread.h>
 
-// Error-string registration is omitted; keep the runtime errno definitions.
+namespace fast {
 
-extern "C" {
+// Make blocking ops in the pthread returns -1 and EINTR.
+// Returns what pthread_kill returns.
+int interrupt_pthread(pthread_t th);
 
-#if defined(OS_LINUX)
+}  // namespace fast
 
-extern int *__errno_location() __attribute__((__const__));
-
-int *bthread_errno_location() {
-    return __errno_location();
-}
-#elif defined(OS_MACOSX)
-
-extern int * __error(void);
-
-int *bthread_errno_location() {
-    return __error();
-}
-#endif
-
-}  // extern "C"
+#endif // BTHREAD_INTERRUPT_PTHREAD_H

@@ -103,7 +103,7 @@ TEST(FastRdmaEndpoint, WaitForWritableBlocksAndWakes) {
         woken = true;
     });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     EXPECT_FALSE(woken);
 
     ibv_wc wc{};
@@ -132,7 +132,7 @@ TEST(FastRdmaEndpoint, MultipleWaiters) {
     std::thread t2(waiter_func);
     std::thread t3(waiter_func);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
     ibv_wc wc{};
     wc.opcode = IBV_WC_SEND;
@@ -152,7 +152,7 @@ TEST(FastRdmaEndpoint, WaitConsumeBehavior) {
     std::thread t1([&] { ep.WaitForWritable(); });
     std::thread t2([&] { ep.WaitForWritable(); });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
     ibv_wc wc{};
     wc.opcode = IBV_WC_SEND;
@@ -169,7 +169,7 @@ TEST(FastRdmaEndpoint, WaitConsumeBehavior) {
         ep.WaitForWritable();
         blocked = true;
     });
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     EXPECT_FALSE(blocked);
 
     wc.wr_id = 1;

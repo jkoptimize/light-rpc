@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <unordered_map>
@@ -70,7 +69,7 @@ class FastRdmaEndpoint : public VersionedRefWithId<FastRdmaEndpoint> {
     static const int PROGRESS_INIT = 1;
 public:
     explicit FastRdmaEndpoint(Forbidden f);
-    ~FastRdmaEndpoint() override = default;
+    ~FastRdmaEndpoint() override;
     // Caller must own a reference. Failure never waits for the calling worker.
     int SetFailed(int error = ECANCELED) {
         return VersionedRefWithId<FastRdmaEndpoint>::SetFailed(error ? error : EIO);
@@ -186,6 +185,8 @@ private:
     friend class FastRdmaEndpointWriteTestPeer;
     // For unit tests only: exercise shutdown using ordinary Linux sockets.
     friend class FastRdmaEndpointLifecycleTestPeer;
+    // For unit tests only: verify window waits without RDMA resources.
+    friend class FastRdmaEndpointWritableTestPeer;
 
     int SendAck(int num);
     int SendImm(uint32_t imm);
@@ -214,6 +215,7 @@ private:
     int StartKeepWrite(WriteRequest* req);
     void KeepWrite(WriteRequest* req);
     ssize_t DoWrite(WriteRequest* req);
+    void WakeForWritable();
     bool IsWriteComplete(WriteRequest* old_head, bool singular,
                          WriteRequest** new_tail);
     int StartAsyncConnect();
@@ -247,6 +249,7 @@ private:
     // ---- Flow control ----
     std::atomic<int> sq_window_size_{0};
     std::atomic<int> remote_rq_window_size_{0};
+    std::atomic<int>* writable_butex_{nullptr};
     int              sq_imm_window_size_{3};
     std::atomic<int> new_rq_wrs_{0};
 
@@ -273,10 +276,6 @@ private:
     std::atomic<int>          _write_error{0};
     std::string               _remote_ip;
     int                       _remote_port{0};
-
-    // ---- Blocking wait ----
-    std::mutex              send_mutex_;
-    std::condition_variable send_cv_;
 
     // ---- Selective signaling stats ----
     int send_counter_{0};

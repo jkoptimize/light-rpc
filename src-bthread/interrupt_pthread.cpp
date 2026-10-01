@@ -17,32 +17,26 @@
 
 // bthread - An M:N threading library to make applications more concurrent.
 
-// Date: Wed Jul 30 11:47:19 CST 2014
+// Date: Tue Jul 10 17:40:58 CST 2012
 
-#include "errno.h"
-#include "butil/build_config.h"
+#include <signal.h>
+#include "interrupt_pthread.h"
 
-// Define errno in bthread/errno.h
-extern const int ESTOP = -20;
+namespace fast {
 
-// Error-string registration is omitted; keep the runtime errno definitions.
+// TODO: Make sure SIGURG is not used by user.
+// This empty handler is simply for triggering EINTR in blocking syscalls.
+void do_nothing_handler(int) {}
 
-extern "C" {
+static pthread_once_t register_sigurg_once = PTHREAD_ONCE_INIT;
 
-#if defined(OS_LINUX)
-
-extern int *__errno_location() __attribute__((__const__));
-
-int *bthread_errno_location() {
-    return __errno_location();
+static void register_sigurg() {
+    signal(SIGURG, do_nothing_handler);
 }
-#elif defined(OS_MACOSX)
 
-extern int * __error(void);
-
-int *bthread_errno_location() {
-    return __error();
+int interrupt_pthread(pthread_t th) {
+    pthread_once(&register_sigurg_once, register_sigurg);
+    return pthread_kill(th, SIGURG);
 }
-#endif
 
-}  // extern "C"
+}  // namespace fast

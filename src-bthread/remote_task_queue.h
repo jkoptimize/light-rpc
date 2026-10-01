@@ -22,7 +22,7 @@
 #ifndef BTHREAD_REMOTE_TASK_QUEUE_H
 #define BTHREAD_REMOTE_TASK_QUEUE_H
 
-#include "butil/containers/bounded_queue.h"
+#include "butil/bounded_queue.h"
 #include "butil/macros.h"
 
 namespace fast {

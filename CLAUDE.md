@@ -202,7 +202,7 @@ test/test.proto → build/test.pb.{h,cc}
 
 ## 开发模式：TDD (Test-Driven Development)
 
-当前采用 TDD 模式进行功能开发，具体规范见 `spec/medium-multipart.md`。
+当前采用 TDD 模式进行功能开发，具体规范见 `docs/works/spec/medium-multipart.md`。
 
 ### TDD 流程
 ```
@@ -222,13 +222,13 @@ test/test.proto → build/test.pb.{h,cc}
 ### 当前迭代规划
 | Phase | 名称 | 文档 |
 |-------|------|------|
-| 1 | FastRdmaEndpoint | [spec/phases/phase1-rdmaendpoint.md](spec/phases/phase1-rdmaendpoint.md) |
-| 2 | EventDispatcher | [spec/phases/phase2-eventdispatcher.md](spec/phases/phase2-eventdispatcher.md) |
+| 1 | FastRdmaEndpoint | [docs/works/spec/phase1-rdmaendpoint.md](docs/works/spec/phase1-rdmaendpoint.md) |
+| 2 | EventDispatcher | [docs/works/spec/phase2-eventdispatcher.md](docs/works/spec/phase2-eventdispatcher.md) |
 | 3 | MessageDispatcher | 新增 — 简化版消息分发器 |
-| 4 | FastChannel | [spec/phases/phase4-fastchannel.md](spec/phases/phase4-fastchannel.md) |
-| 5 | FastServer | [spec/phases/phase5-fastserver.md](spec/phases/phase5-fastserver.md) |
+| 4 | FastChannel | [docs/works/spec/phase4-fastchannel.md](docs/works/spec/phase4-fastchannel.md) |
+| 5 | FastServer | [docs/works/spec/phase5-fastserver.md](docs/works/spec/phase5-fastserver.md) |
 
-> Phase 3/4 (UniqueResource / SharedResource) 已移至 `spec/deprecated/`，后续可能移除。
+> Phase 3/4 (UniqueResource / SharedResource) 已移至 `docs/works/spec/deprecated/`，后续可能移除。
 
 ### CMakeLists 更新规范
 每个 Phase 完成后必须：

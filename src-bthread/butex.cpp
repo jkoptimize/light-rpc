@@ -22,8 +22,8 @@
 #include <atomic>
 #include "butil/scoped_lock.h"              // BAIDU_SCOPED_LOCK
 #include "butil/macros.h"
-#include "butil/containers/flat_map.h"
-#include "butil/containers/linked_list.h"   // LinkNode
+#include "butil/flat_map.h"
+#include "butil/linked_list.h"   // LinkNode
 #ifdef SHOW_BTHREAD_BUTEX_WAITER_COUNT_IN_VARS
 #endif
 #include "butil/object_pool.h"
@@ -122,11 +122,11 @@ BAIDU_CASSERT(sizeof(Butex) == BAIDU_CACHELINE_SIZE, butex_fits_in_one_cacheline
 
 } // namespace fast
 
-namespace butil {
+namespace fast::butil {
 // Butex object returned to the ObjectPool<Butex> may be accessed,
 // so ObjectPool<Butex> can not poison the memory region of Butex.
 template <>
-struct ObjectPoolWithASanPoison<fast::Butex> : false_type {};
+struct ObjectPoolWithASanPoison<fast::Butex> : std::false_type {};
 } // namespace butil
 
 namespace fast {
@@ -749,7 +749,7 @@ int butex_wait(void* arg, int expected_value, const timespec* abstime, bool prep
 
 }  // namespace fast
 
-namespace butil {
+namespace fast::butil {
 template <> struct ObjectPoolBlockMaxItem<fast::Butex> {
     static const size_t value = 128;
 };

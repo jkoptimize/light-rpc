@@ -23,6 +23,7 @@
 #define BTHREAD_TYPES_H
 
 #include "inc/fast_log.h"
+#include "inc/fast_bthread_config.h"
 #include <stdint.h>                            // uint64_t
 #include "butil/macros.h"
 #if defined(__cplusplus)

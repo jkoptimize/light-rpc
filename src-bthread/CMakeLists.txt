@@ -1,8 +1,22 @@
 # bthread M:N coroutine library, ported from brpc.
-# Task2 stage: only butil base modules; bthread core sources are appended in
-# later tasks.
+# Include the scheduler/timer/mutex dependency closure required by butex.
 
 set(BTHREAD_SOURCES
+    bthread.cpp
+    bthread_once.cpp
+    butex.cpp
+    condition_variable.cpp
+    context.cpp
+    id.cpp
+    errno.cpp
+    interrupt_pthread.cpp
+    key.cpp
+    mutex.cpp
+    stack.cpp
+    sys_futex.cpp
+    task_control.cpp
+    task_group.cpp
+    timer_thread.cpp
     butil/time.cpp
     butil/fast_rand.cpp
     butil/thread_local.cpp

@@ -4,6 +4,8 @@
 
 ## 索引
 
+### bthread / 同步原语
+
 | 知识点 | 主要源码 | 内容 |
 |--------|----------|------|
 | [WorkStealingQueue 的 push/pop/steal](work-stealing-queue.md) | `src-bthread/work_stealing_queue.h` | owner 与 thief 的分工、最后一个元素的 CAS 竞争、内存序与失败语义 |
@@ -11,8 +13,26 @@
 | [ParkingLot 等待与唤醒](parking-lot.md) | `src-bthread/parking_lot.h` | 空闲 worker 休眠、通知状态与防止错过唤醒 |
 | [VersionedRefWithId 版本化引用与回收竞争](versioned-ref-with-id.md) | `inc/versioned_ref_with_id.h` | 版本/引用计数编码、两个回收者的 CAS 竞争、`ver1+1==ver2` 兜底回收 |
 
+### butil 工具模块
+
+| 知识点 | 主要源码 | 内容 |
+|--------|----------|------|
+| [AlignedMemory 对齐存储单元](butil-aligned-memory.md) | `src-bthread/butil/aligned_memory.h` | 对齐分配与手动构造 |
+| [fast_rand 快速随机数](butil-fast-rand.md) | `src-bthread/butil/fast_rand.*` | 快速随机数生成 |
+| [flat_map 首节点内联哈希表](butil-flat-map.md) | `src-bthread/butil/flat_map.h` | 相比 `std::unordered_map` 的性能优势与实现权衡 |
+| [ThreadKey / ThreadLocal](butil-thread-key.md) | `src-bthread/butil/thread_key.*` | 线程私有数据的 API 与实现 |
+| [thread_local 线程局部存储](butil-thread-local.md) | `src-bthread/butil/thread_local.*` | 线程局部存储与线程退出回调 |
+| [time 时间测量工具](butil-time.md) | `src-bthread/butil/time.*` | 时间测量 API |
+
+### 设计权衡与移植复盘
+
+| 知识点 | 主要源码 | 内容 |
+|--------|----------|------|
+| [TLS/内存模块与 pthread 的对比](butil-thread-key-vs-pthread.md) | `butil/thread_key`、`thread_local`、`aligned_memory` | 为什么重写 pthread_key、ManualConstructor 的动机等设计权衡 |
+| [bthread 移植偏差检查](bthread-port-review.md) | `src-bthread/` | mutex 之外的移植偏差复盘 |
+
 ## 记录约定
 
 每篇记录包含问题背景、源码位置、实现模型、关键竞争过程、容易误解的地方和自测问题。源码位置以函数名为主；并发时序示例用于解释指定场景，不代替完整的内存模型正确性证明。
 
-学习路径见 [bthread 核心学习计划](../impl/bthread-learning-plan.md)。
+学习/移植计划见 [docs/works](../works/)。

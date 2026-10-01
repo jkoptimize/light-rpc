@@ -20,7 +20,7 @@
 // specialization. This lets BAIDU_SCOPED_LOCK work with both std::mutex and
 // the statically-initialized raw pthread_mutex_t used by resource_pool /
 // object_pool. Removed: the pre-C++11 std::lock_guard/unique_lock fallbacks,
-// pthread_spinlock_t specializations, butil::double_lock.
+// pre-C++11 fallbacks. Spinlock guards and double_lock are used by butex.
 
 #ifndef FAST_BUTIL_SCOPED_LOCK_H
 #define FAST_BUTIL_SCOPED_LOCK_H
@@ -28,6 +28,7 @@
 #include <pthread.h>   // pthread_mutex_t
 #include <mutex>       // std::lock_guard
 #include <type_traits> // std::remove_reference
+#include "inc/fast_log.h"
 
 #include "macros.h"    // BAIDU_CONCAT, DISALLOW_COPY_AND_ASSIGN
 
@@ -40,6 +41,23 @@ template <typename T>
 std::lock_guard<typename std::remove_reference<T>::type> get_lock_guard();
 
 }  // namespace detail
+
+// brpc's address-ordered locking, used when butex requeues waiters.
+template <typename Mutex1, typename Mutex2>
+void double_lock(std::unique_lock<Mutex1>& lck1, std::unique_lock<Mutex2>& lck2) {
+    DCHECK(!lck1.owns_lock());
+    DCHECK(!lck2.owns_lock());
+    volatile void* const ptr1 = lck1.mutex();
+    volatile void* const ptr2 = lck2.mutex();
+    DCHECK_NE(ptr1, ptr2);
+    if (ptr1 < ptr2) {
+        lck1.lock();
+        lck2.lock();
+    } else {
+        lck2.lock();
+        lck1.lock();
+    }
+}
 }  // namespace butil
 }  // namespace fast
 
@@ -48,6 +66,31 @@ std::lock_guard<typename std::remove_reference<T>::type> get_lock_guard();
     BAIDU_CONCAT(scoped_locker_dummy_at_line_, __LINE__)(ref_of_lock)
 
 namespace std {
+
+template<> class lock_guard<pthread_spinlock_t> {
+public:
+    explicit lock_guard(pthread_spinlock_t& spin) : _pspin(&spin) {
+#ifndef NDEBUG
+        const int rc = pthread_spin_lock(_pspin);
+        if (rc) {
+            LOG(FATAL) << "Fail to lock pthread_spinlock_t: " << rc;
+            _pspin = nullptr;
+        }
+#else
+        pthread_spin_lock(_pspin);
+#endif
+    }
+    ~lock_guard() {
+#ifndef NDEBUG
+        if (_pspin) pthread_spin_unlock(_pspin);
+#else
+        pthread_spin_unlock(_pspin);
+#endif
+    }
+private:
+    DISALLOW_COPY_AND_ASSIGN(lock_guard);
+    pthread_spinlock_t* _pspin;
+};
 
 // Specialization so that BAIDU_SCOPED_LOCK works on raw pthread_mutex_t, which
 // resource_pool / object_pool use for constant (PTHREAD_MUTEX_INITIALIZER)

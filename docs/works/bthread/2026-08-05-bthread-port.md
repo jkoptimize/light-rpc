@@ -701,7 +701,7 @@ sed -i 's/FLAGS_bthread_parking_lot_of_each_tag/FastBthreadConfig::Get().parking
 
 独立日志测试 13 项 × 3 种 DCHECK 构建模式通过；主项目 Debug/Release 构建通过。bthread 核心仍有独立构建阻塞，本步骤不代表完整日志后端迁移或 bthread 集成验证完成。
 
-记录与复现命令见 [日志基础设施修复](../../impl/bthread-logging-port.md)。完整 bvar 移植暂缓；后续已确认裁剪无消费者的 `_nworkers`、`_nbthreads`，详见 Task 9。其他统计项仍须逐项审核用途。
+记录与复现命令见 [日志基础设施修复](bthread-logging-port.md)。完整 bvar 移植暂缓；后续已确认裁剪无消费者的 `_nworkers`、`_nbthreads`，详见 Task 9。其他统计项仍须逐项审核用途。
 
 - [ ] **Step 4: 处理 DEFINE_*/DECLARE_* 语句**
 

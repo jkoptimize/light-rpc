@@ -49,3 +49,11 @@ target_link_libraries(rdma_write_queue_tests fastrpc ${GTEST_LIBRARIES} pthread
                       "-Wl,--wrap=sched_yield")
 add_test(NAME RdmaWriteQueueTests COMMAND rdma_write_queue_tests)
 set_tests_properties(RdmaWriteQueueTests PROPERTIES TIMEOUT 30)
+
+# Pause at the real butex_wait entry to reproduce predicate-check/wait races.
+# The wrapper is linked only into this test executable.
+add_executable(rdma_writable_tests test/endpoint_writable_test.cc)
+target_link_libraries(rdma_writable_tests fastrpc ${GTEST_LIBRARIES} pthread
+                      "-Wl,--wrap=_ZN4fast10butex_waitEPviPK8timespecb")
+add_test(NAME RdmaWritableTests COMMAND rdma_writable_tests)
+set_tests_properties(RdmaWritableTests PROPERTIES TIMEOUT 30)

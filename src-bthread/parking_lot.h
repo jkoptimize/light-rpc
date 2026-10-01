@@ -23,6 +23,7 @@
 #define BTHREAD_PARKING_LOT_H
 
 #include <atomic>
+#include "inc/fast_bthread_config.h"
 #include "sys_futex.h"
 
 namespace fast {
