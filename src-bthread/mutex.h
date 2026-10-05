@@ -77,27 +77,7 @@ private:
 };
 
 namespace internal {
-#ifdef BTHREAD_USE_FAST_PTHREAD_MUTEX
-class FastPthreadMutex {
-public:
-    FastPthreadMutex();
-    void lock();
-    void unlock();
-    bool try_lock();
-    bool timed_lock(const struct timespec* abstime);
-private:
-    DISALLOW_COPY_AND_ASSIGN(FastPthreadMutex);
-    int lock_contended(const struct timespec* abstime);
-
-    unsigned _futex;
-    // Note: Owner detection of the mutex comes with average execution
-    // slowdown of about 50%., so it is only used for debugging and is
-    // only available when the macro `BRPC_DEBUG_LOCK' = 1.
-    mutex_owner_t _owner;
-};
-#else
 typedef std::mutex FastPthreadMutex;
-#endif
 }
 
 class FastPthreadMutex {
@@ -109,9 +89,6 @@ public:
     void lock();
     void unlock();
     bool try_lock() { return _mutex.try_lock(); }
-#if defined(BTHREAD_USE_FAST_PTHREAD_MUTEX) || HAS_PTHREAD_MUTEX_TIMEDLOCK
-    bool timed_lock(const struct timespec* abstime);
-#endif // BTHREAD_USE_FAST_PTHREAD_MUTEX  HAS_PTHREAD_MUTEX_TIMEDLOCK
 
 private:
     internal::FastPthreadMutex _mutex;

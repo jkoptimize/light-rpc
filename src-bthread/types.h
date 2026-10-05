@@ -169,37 +169,16 @@ typedef struct {
     unsigned conflict_size;
 } bthread_list_t;
 
-// TODO: bthread_contention_site_t should be put into butex.
-typedef struct {
-    int64_t duration_ns;
-    size_t sampling_range;
-} bthread_contention_site_t;
-
-struct mutex_owner_t {
-    bool hold;
-    uint64_t id;
-};
-
 typedef struct bthread_mutex_t {
 #if defined(__cplusplus)
-    bthread_mutex_t()
-        : butex(NULL), csite{}
-        , enable_csite(false)
-        , owner{false, 0} {}
+    bthread_mutex_t() : butex(NULL) {}
 
     DISALLOW_COPY_AND_ASSIGN(bthread_mutex_t);
 #endif
     unsigned* butex;
-    bthread_contention_site_t csite;
-    bool enable_csite;
-    // Note: Owner detection of the mutex comes with average execution
-    // slowdown of about 50%, so it is only used for debugging and is
-    // only available when the macro `BRPC_DEBUG_LOCK' = 1.
-    mutex_owner_t owner;
 } bthread_mutex_t;
 
 typedef struct {
-    bool enable_csite;
 } bthread_mutexattr_t;
 
 typedef struct bthread_cond_t {
@@ -216,17 +195,16 @@ typedef struct {
 
 typedef struct bthread_sem_t {
 #if defined(__cplusplus)
-    bthread_sem_t() : butex(NULL), enable_csite(true) {}
+    bthread_sem_t() : butex(NULL) {}
     DISALLOW_COPY_AND_ASSIGN(bthread_sem_t);
 #endif
     unsigned* butex;
-    bool enable_csite;
 } bthread_sem_t;
 
 typedef struct bthread_rwlock_t {
 #if defined(__cplusplus)
     bthread_rwlock_t()
-        : reader_count(0), reader_wait(0), wlock_flag(false), writer_csite{} {}
+        : reader_count(0), reader_wait(0), wlock_flag(false) {}
     DISALLOW_COPY_AND_ASSIGN(bthread_rwlock_t);
 #endif
     bthread_sem_t reader_sema; // Semaphore for readers to wait for completing writers.
@@ -235,7 +213,6 @@ typedef struct bthread_rwlock_t {
     int reader_wait; // Number of departing readers.
     bool wlock_flag; // Flag used to indicate that a write lock has been held.
     bthread_mutex_t write_queue_mutex; // Held if there are pending writers.
-    bthread_contention_site_t writer_csite;
 } bthread_rwlock_t;
 
 typedef struct {

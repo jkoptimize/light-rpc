@@ -12,6 +12,8 @@ set(BTHREAD_SOURCES
     interrupt_pthread.cpp
     key.cpp
     mutex.cpp
+    rwlock.cpp
+    semaphore.cpp
     stack.cpp
     sys_futex.cpp
     task_control.cpp
