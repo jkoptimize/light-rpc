@@ -1,5 +1,7 @@
 # bthread 移植偏差检查（mutex 之外）
 
+> 当前状态请看 [2026-10-06 基础设施复核](bthread-port-audit-2026-10-06.md)：核心构建、中断设施、semaphore/rwlock、FastPthreadMutex 和启动校验已补齐，Debug/Release 回归通过。下文保留历史审查事实，不代表这些缺口仍然存在。
+
 > 检查日期：2026-09-25。移植基线：当前 HEAD `27dd54b`；对照 `/home/syt/Desktop/brpc/brpc/src/bthread/` 及其 butil/bvar 依赖。
 > 本次更新学习文档并审查源码，不修改运行时代码。以本项目移植代码为学习对象。
 
@@ -13,7 +15,7 @@
 
 ## 2. 已确认的构建与基础能力缺口
 
-> 2026-09-27 后续更新：已将 src-bthread 搜索路径改为 `-iquote`，解决本目录 errno.h 遮蔽系统头的问题。现有 fast_bthread 基础库目标可编译；下述核心接入、缺失依赖等问题仍待处理。详情见 [日志与头文件搜索修复记录](bthread-logging-port.md)。
+> 2026-09-27 后续更新：已将 src-bthread 搜索路径改为 `-iquote`，解决本目录 errno.h 遮蔽系统头的问题。现有 fast_bthread 基础库目标可编译；下述核心接入、缺失依赖等问题仍待处理。详情见 [日志与头文件搜索修复记录](../works/bthread/bthread-logging-port.md)。
 
 ### 2.1 核心未进入构建，路径适配尚未完成
 
@@ -91,7 +93,7 @@ FD/epoll、execution_queue、countdown_event 等属于功能范围选择，不�
 
 ### 3.3 日志限频丢失，部分 DCHECK 被提升为 CHECK
 
-> 2026-09-27 更新：本节所列限频与 DCHECK 偏差已修复，并补齐日志宏惰性求值与独立测试，见 [日志基础设施修复](bthread-logging-port.md)。以下保留最初审计事实；bthread 整体编译缺口仍未解决。
+> 2026-09-27 更新：本节所列限频与 DCHECK 偏差已修复，并补齐日志宏惰性求值与独立测试，见 [日志基础设施修复](../works/bthread/bthread-logging-port.md)。以下保留最初审计事实；bthread 整体编译缺口仍未解决。
 
 - `task_group_inl.h::push_rq` 与 `task_group.cpp::ready_to_run_remote` 将 `LOG_EVERY_SECOND` 改为每次循环输出。
 - 队列满时循环还会 `usleep(1000)`，多个线程持续输出可能放大过载；项目 LogMessage 使用字符串流并在输出时 flush。
@@ -137,4 +139,4 @@ g++ -std=c++17 -D_GNU_SOURCE -I. -Isrc-bthread -fsyntax-only src-bthread/<file>.
 4. 完成 mutex 后把全部核心加入构建，验证链接与公开 API 一致性。
 5. 在本项目执行 start/join、yield、sleep、TLS、butex、同步和停止流程实验；再在同机同参数下比较多 worker 创建/销毁、切换和唤醒的性能。
 
-学习可以先按 [学习计划](bthread-learning-plan.md) 阶段 ② 跟踪接口路径；遇到这里记录的适配缺口，不必将其误解为原算法的复杂性。
+学习可以先按 [学习计划](../works/bthread/bthread-learning-plan.md) 阶段 ② 跟踪接口路径；遇到这里记录的适配缺口，不必将其误解为原算法的复杂性。

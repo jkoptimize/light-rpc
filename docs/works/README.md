@@ -10,6 +10,12 @@
 | [spec/](spec/) | 迭代规格与实现计划（**旧方案**，可能与最新代码不一致，见 [spec/README.md](spec/README.md)） |
 | [problem-fix/](problem-fix/) | 具体问题的分析与修复记录 |
 
+## bthread 接入 RPC
+
+| 文档 | 内容 |
+|------|------|
+| [将 bthread 基础设施接入 RPC 流程](bthread/rpc-bthread-integration-plan.md) | 基于当前代码逐段对照 brpc，规划事件/握手、调用完成、协议与大消息、关闭恢复及分阶段验收；方案阶段 |
+
 ## 问题修复
 
 | 文档 | 内容 |

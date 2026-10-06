@@ -57,3 +57,10 @@ target_link_libraries(rdma_writable_tests fastrpc ${GTEST_LIBRARIES} pthread
                       "-Wl,--wrap=_ZN4fast10butex_waitEPviPK8timespecb")
 add_test(NAME RdmaWritableTests COMMAND rdma_writable_tests)
 set_tests_properties(RdmaWritableTests PROPERTIES TIMEOUT 30)
+
+# Exercise the port independently of the RPC/RDMA library. Startup checks run
+# in subprocesses so that each case sees an uninitialized scheduler.
+add_executable(bthread_runtime_tests test/bthread_runtime_test.cc)
+target_link_libraries(bthread_runtime_tests fast_bthread ${GTEST_LIBRARIES} pthread)
+add_test(NAME BthreadRuntimeTests COMMAND bthread_runtime_tests)
+set_tests_properties(BthreadRuntimeTests PROPERTIES TIMEOUT 30)

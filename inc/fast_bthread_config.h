@@ -6,7 +6,9 @@
 
 namespace fast {
 
-// 在首次启动 bthread 前设置。当前字段不会自动校验，也不支持并发修改。
+// 在首次启动 bthread 前设置，不支持运行时直接赋值或并发修改。
+// 首次创建调度器时校验 concurrency、min_concurrency 和 parking-lot 数量，
+// 对齐 brpc 原 gflags validator；其他字段仍须满足下述使用前提。
 // 运行时调整线程数请使用 bthread_setconcurrency / bthread_setconcurrency_by_tag。
 struct FastBthreadConfig {
     // worker 线程数量，默认 9，建议取值 4～1024。

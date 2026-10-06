@@ -1,0 +1,18 @@
+Running main() from /usr/src/googletest/googletest/src/gtest_main.cc
+Note: Google Test filter = MutexTest.performance
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from MutexTest
+[ RUN      ] MutexTest.performance
+I1006 13:12:49.307122 1651729     0 /home/syt/Desktop/brpc/brpc/test/bthread_mutex_unittest.cpp:221 PerfTest] butil::Mutex in pthread thread_num=12 count=8153539 average_time=734.737
+I1006 13:12:49.809112 1651729     0 /home/syt/Desktop/brpc/brpc/test/bthread_mutex_unittest.cpp:221 PerfTest] butil::Mutex in bthread thread_num=12 count=8456679 average_time=531.895
+I1006 13:12:50.311013 1651729     0 /home/syt/Desktop/brpc/brpc/test/bthread_mutex_unittest.cpp:221 PerfTest] bthread::FastPthreadMutex in pthread thread_num=12 count=12246295 average_time=488.917
+I1006 13:12:50.812644 1651729     0 /home/syt/Desktop/brpc/brpc/test/bthread_mutex_unittest.cpp:221 PerfTest] bthread::FastPthreadMutex in bthread thread_num=12 count=11834555 average_time=379.96
+I1006 13:12:51.316171 1651729     0 /home/syt/Desktop/brpc/brpc/test/bthread_mutex_unittest.cpp:221 PerfTest] bthread::Mutex in pthread thread_num=12 count=13307133 average_time=450.177
+I1006 13:12:51.817544 1651729     0 /home/syt/Desktop/brpc/brpc/test/bthread_mutex_unittest.cpp:221 PerfTest] bthread::Mutex in bthread thread_num=12 count=13557874 average_time=442.315
+[       OK ] MutexTest.performance (3012 ms)
+[----------] 1 test from MutexTest (3012 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (3012 ms total)
+[  PASSED  ] 1 test.

@@ -53,6 +53,31 @@ inline TaskControl* get_task_control() {
     return g_task_control;
 }
 
+// Restore the startup checks formerly performed by brpc's gflags validators.
+// FastBthreadConfig is startup-only; dynamic concurrency uses the public setters.
+static bool validate_startup_config() {
+    const auto& config = FastBthreadConfig::Get();
+    if (config.bthread_concurrency < BTHREAD_MIN_CONCURRENCY ||
+        config.bthread_concurrency > BTHREAD_MAX_CONCURRENCY) {
+        LOG(ERROR) << "Invalid bthread_concurrency=" << config.bthread_concurrency;
+        return false;
+    }
+    if (config.bthread_min_concurrency > 0 &&
+        (config.bthread_min_concurrency < BTHREAD_MIN_CONCURRENCY ||
+         config.bthread_min_concurrency > config.bthread_concurrency)) {
+        LOG(ERROR) << "Invalid bthread_min_concurrency="
+                   << config.bthread_min_concurrency;
+        return false;
+    }
+    if (config.parking_lot_of_each_tag < BTHREAD_MIN_PARKINGLOT ||
+        config.parking_lot_of_each_tag > BTHREAD_MAX_PARKINGLOT) {
+        LOG(ERROR) << "Invalid parking_lot_of_each_tag="
+                   << config.parking_lot_of_each_tag;
+        return false;
+    }
+    return true;
+}
+
 inline TaskControl* get_or_new_task_control() {
     std::atomic<TaskControl*>* p = (std::atomic<TaskControl*>*)&g_task_control;
     TaskControl* c = p->load(std::memory_order_consume);
@@ -63,6 +88,9 @@ inline TaskControl* get_or_new_task_control() {
     c = p->load(std::memory_order_consume);
     if (c != NULL) {
         return c;
+    }
+    if (!validate_startup_config()) {
+        return NULL;
     }
     c = new (std::nothrow) TaskControl;
     if (NULL == c) {
@@ -421,6 +449,9 @@ int bthread_setconcurrency_by_tag(int num, bthread_tag_t tag) {
         return EINVAL;
     }
     auto c = fast::get_or_new_task_control();
+    if (c == NULL) {
+        return ENOMEM;
+    }
     BAIDU_SCOPED_LOCK(fast::g_task_control_mutex);
     auto tag_ngroup = c->concurrency(tag);
     auto add = num - tag_ngroup;

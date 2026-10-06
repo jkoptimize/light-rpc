@@ -77,7 +77,21 @@ private:
 };
 
 namespace internal {
-typedef std::mutex FastPthreadMutex;
+// brpc's BTHREAD_USE_FAST_PTHREAD_MUTEX implementation. The Linux port
+// always uses this path; contention blocks a pthread, not a bthread.
+class FastPthreadMutex {
+public:
+    FastPthreadMutex();
+    void lock();
+    void unlock();
+    bool try_lock();
+    bool timed_lock(const struct timespec* abstime);
+private:
+    DISALLOW_COPY_AND_ASSIGN(FastPthreadMutex);
+    int lock_contended(const struct timespec* abstime);
+
+    unsigned _futex;
+};
 }
 
 class FastPthreadMutex {
@@ -89,6 +103,7 @@ public:
     void lock();
     void unlock();
     bool try_lock() { return _mutex.try_lock(); }
+    bool timed_lock(const struct timespec* abstime);
 
 private:
     internal::FastPthreadMutex _mutex;

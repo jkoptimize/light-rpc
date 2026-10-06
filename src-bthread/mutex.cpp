@@ -25,6 +25,8 @@
 #include "mutex.h"
 #include "processor.h"
 #include "task_group.h"
+#include "sys_futex.h"
+#include "butil/time.h"
 
 // brpc's non-profiling mutex paths. Contention sampling, pthread interposition
 // and debug-owner tracking are intentionally outside the light-rpc port.
@@ -96,8 +98,74 @@ inline int mutex_lock_contended_impl(bthread_mutex_t* __restrict m,
     return 0;
 }
 
+namespace internal {
+
+FastPthreadMutex::FastPthreadMutex() : _futex(0) {}
+
+int FastPthreadMutex::lock_contended(const struct timespec* abstime) {
+    int64_t abstime_us = 0;
+    if (NULL != abstime) {
+        abstime_us = butil::timespec_to_microseconds(*abstime);
+    }
+    auto whole = (std::atomic<unsigned>*)&_futex;
+    while (whole->exchange(BTHREAD_MUTEX_CONTENDED) & BTHREAD_MUTEX_LOCKED) {
+        timespec* ptimeout = NULL;
+        timespec timeout{};
+        if (NULL != abstime) {
+            timeout = butil::microseconds_to_timespec(
+                abstime_us - butil::gettimeofday_us());
+            ptimeout = &timeout;
+        }
+        if (NULL == abstime || abstime_us > MIN_SLEEP_US) {
+            if (futex_wait_private(whole, BTHREAD_MUTEX_CONTENDED, ptimeout) < 0
+                && errno != EWOULDBLOCK && errno != EINTR/*note*/) {
+                // A mutex lock should ignore interruptions in general since
+                // user code is unlikely to check the return value.
+                return errno;
+            }
+        } else {
+            errno = ETIMEDOUT;
+            return errno;
+        }
+    }
+    return 0;
+}
+
+void FastPthreadMutex::lock() {
+    if (try_lock()) {
+        return;
+    }
+    (void)lock_contended(NULL);
+}
+
+bool FastPthreadMutex::try_lock() {
+    auto split = (fast::MutexInternal*)&_futex;
+    return !split->locked.exchange(1, std::memory_order_acquire);
+}
+
+bool FastPthreadMutex::timed_lock(const struct timespec* abstime) {
+    if (try_lock()) {
+        return true;
+    }
+    return 0 == lock_contended(abstime);
+}
+
+void FastPthreadMutex::unlock() {
+    auto whole = (std::atomic<unsigned>*)&_futex;
+    const unsigned prev = whole->exchange(0, std::memory_order_release);
+    // CAUTION: the mutex may be destroyed, check comments before butex_create.
+    if (prev != BTHREAD_MUTEX_LOCKED) {
+        futex_wake_private(whole, 1);
+    }
+}
+
+} // namespace internal
+
 void FastPthreadMutex::lock() { _mutex.lock(); }
 void FastPthreadMutex::unlock() { _mutex.unlock(); }
+bool FastPthreadMutex::timed_lock(const struct timespec* abstime) {
+    return _mutex.timed_lock(abstime);
+}
 } // namespace fast
 
 extern "C" {

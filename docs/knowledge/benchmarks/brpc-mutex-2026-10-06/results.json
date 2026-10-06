@@ -1,0 +1,338 @@
+[
+  {
+    "run": 1,
+    "lock": "butil::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 8910200,
+    "average_ns": 672.603
+  },
+  {
+    "run": 1,
+    "lock": "butil::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 8952088,
+    "average_ns": 502.339
+  },
+  {
+    "run": 1,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 12260102,
+    "average_ns": 488.126
+  },
+  {
+    "run": 1,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 11861697,
+    "average_ns": 379.082
+  },
+  {
+    "run": 1,
+    "lock": "bthread::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 12863762,
+    "average_ns": 465.819
+  },
+  {
+    "run": 1,
+    "lock": "bthread::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 12841213,
+    "average_ns": 466.308
+  },
+  {
+    "run": 2,
+    "lock": "butil::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 9288579,
+    "average_ns": 645.032
+  },
+  {
+    "run": 2,
+    "lock": "butil::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 9012541,
+    "average_ns": 499.47
+  },
+  {
+    "run": 2,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 11134058,
+    "average_ns": 537.944
+  },
+  {
+    "run": 2,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 10819777,
+    "average_ns": 415.803
+  },
+  {
+    "run": 2,
+    "lock": "bthread::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 12599737,
+    "average_ns": 475.757
+  },
+  {
+    "run": 2,
+    "lock": "bthread::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 11863476,
+    "average_ns": 505.72
+  },
+  {
+    "run": 3,
+    "lock": "butil::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 8066955,
+    "average_ns": 742.645
+  },
+  {
+    "run": 3,
+    "lock": "butil::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 7776807,
+    "average_ns": 578.265
+  },
+  {
+    "run": 3,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 11534524,
+    "average_ns": 519.752
+  },
+  {
+    "run": 3,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 10896864,
+    "average_ns": 412.917
+  },
+  {
+    "run": 3,
+    "lock": "bthread::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 12905117,
+    "average_ns": 464.59
+  },
+  {
+    "run": 3,
+    "lock": "bthread::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 12791460,
+    "average_ns": 468.299
+  },
+  {
+    "run": 4,
+    "lock": "butil::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 8298009,
+    "average_ns": 722.038
+  },
+  {
+    "run": 4,
+    "lock": "butil::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 7818705,
+    "average_ns": 575.06
+  },
+  {
+    "run": 4,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 12677954,
+    "average_ns": 472.653
+  },
+  {
+    "run": 4,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 12746207,
+    "average_ns": 352.363
+  },
+  {
+    "run": 4,
+    "lock": "bthread::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 12463383,
+    "average_ns": 480.668
+  },
+  {
+    "run": 4,
+    "lock": "bthread::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 12531445,
+    "average_ns": 478.433
+  },
+  {
+    "run": 5,
+    "lock": "butil::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 8599947,
+    "average_ns": 696.552
+  },
+  {
+    "run": 5,
+    "lock": "butil::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 8545793,
+    "average_ns": 526.328
+  },
+  {
+    "run": 5,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 12290014,
+    "average_ns": 487.332
+  },
+  {
+    "run": 5,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 12430797,
+    "average_ns": 361.419
+  },
+  {
+    "run": 5,
+    "lock": "bthread::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 12807753,
+    "average_ns": 467.962
+  },
+  {
+    "run": 5,
+    "lock": "bthread::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 13197797,
+    "average_ns": 453.94
+  },
+  {
+    "run": 6,
+    "lock": "butil::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 9073131,
+    "average_ns": 660.083
+  },
+  {
+    "run": 6,
+    "lock": "butil::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 7768449,
+    "average_ns": 578.897
+  },
+  {
+    "run": 6,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 11275046,
+    "average_ns": 531.271
+  },
+  {
+    "run": 6,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 10870643,
+    "average_ns": 414.083
+  },
+  {
+    "run": 6,
+    "lock": "bthread::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 12769774,
+    "average_ns": 469.193
+  },
+  {
+    "run": 6,
+    "lock": "bthread::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 12103506,
+    "average_ns": 495.757
+  },
+  {
+    "run": 7,
+    "lock": "butil::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 8153539,
+    "average_ns": 734.737
+  },
+  {
+    "run": 7,
+    "lock": "butil::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 8456679,
+    "average_ns": 531.895
+  },
+  {
+    "run": 7,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 12246295,
+    "average_ns": 488.917
+  },
+  {
+    "run": 7,
+    "lock": "bthread::FastPthreadMutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 11834555,
+    "average_ns": 379.96
+  },
+  {
+    "run": 7,
+    "lock": "bthread::Mutex",
+    "context": "pthread",
+    "threads": 12,
+    "count": 13307133,
+    "average_ns": 450.177
+  },
+  {
+    "run": 7,
+    "lock": "bthread::Mutex",
+    "context": "bthread",
+    "threads": 12,
+    "count": 13557874,
+    "average_ns": 442.315
+  }
+]

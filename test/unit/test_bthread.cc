@@ -4,9 +4,12 @@
 #include <chrono>
 #include <thread>
 #include <time.h>
+#include <vector>
 
 #include "bthread.h"    // bthread_* C API
 #include "types.h"      // bthread_t, bthread_mutex_t, bthread_sem_t, bthread_rwlock_t
+#include "mutex.h"
+#include "butil/time.h"
 
 namespace fast {
 namespace {
@@ -81,6 +84,80 @@ TEST(BthreadMutexTest, Timedlock) {
     EXPECT_EQ(ETIMEDOUT, bthread_mutex_timedlock(&mutex, &abstime));
     ASSERT_EQ(0, bthread_mutex_unlock(&mutex));
     ASSERT_EQ(0, bthread_mutex_destroy(&mutex));
+}
+
+// --- FastPthreadMutex ---
+
+TEST(FastPthreadMutexTest, TryLockAndExpiredDeadlineWhenFree) {
+    FastPthreadMutex mutex;
+    ASSERT_TRUE(mutex.try_lock());
+    std::thread contender([&]() { EXPECT_FALSE(mutex.try_lock()); });
+    contender.join();
+    mutex.unlock();
+    const timespec expired = {0, 0};
+    // Like brpc, the immediate acquisition precedes the deadline check.
+    ASSERT_TRUE(mutex.timed_lock(&expired));
+    mutex.unlock();
+}
+
+TEST(FastPthreadMutexTest, ContendedCounter) {
+    FastPthreadMutex mutex;
+    int counter = 0;
+    std::atomic<bool> start{false};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 8; ++i) {
+        threads.emplace_back([&]() {
+            while (!start.load()) std::this_thread::yield();
+            for (int j = 0; j < 10000; ++j) {
+                std::lock_guard<FastPthreadMutex> guard(mutex);
+                ++counter;
+            }
+        });
+    }
+    start.store(true);
+    for (auto& thread : threads) thread.join();
+    EXPECT_EQ(80000, counter);
+}
+
+TEST(FastPthreadMutexTest, TimedWaitExpiresAndMutexRemainsUsable) {
+    FastPthreadMutex mutex;
+    mutex.lock();
+    std::thread contender([&]() {
+        const timespec deadline = butil::microseconds_to_timespec(
+            butil::gettimeofday_us() + 50000);
+        const bool acquired = mutex.timed_lock(&deadline);
+        const int error = errno;
+        EXPECT_FALSE(acquired);
+        if (acquired) mutex.unlock();
+        else EXPECT_EQ(ETIMEDOUT, error);
+    });
+    contender.join();
+    mutex.unlock();
+    ASSERT_TRUE(mutex.try_lock());
+    mutex.unlock();
+}
+
+TEST(FastPthreadMutexTest, UnlockReleasesTimedWaiter) {
+    FastPthreadMutex mutex;
+    mutex.lock();
+    std::atomic<bool> entering{false};
+    int value = 0;
+    std::thread contender([&]() {
+        const timespec deadline = butil::microseconds_to_timespec(
+            butil::gettimeofday_us() + 5000000);
+        entering.store(true);
+        const bool acquired = mutex.timed_lock(&deadline);
+        EXPECT_TRUE(acquired);
+        if (acquired) {
+            EXPECT_EQ(42, value);
+            mutex.unlock();
+        }
+    });
+    while (!entering.load()) std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    value = 42;
+    mutex.unlock();
+    contender.join();
 }
 
 // --- semaphore ---

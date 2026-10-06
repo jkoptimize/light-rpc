@@ -234,7 +234,7 @@ double _cumulated_worker_time{0.0};
 - contention profiler (`g_cp`, `ContentionProfiler`, `SampledContention`)
 - pthread_mutex interposition / `dlsym` hook
 - `BRPC_DEBUG_LOCK` 死锁检测
-- `BTHREAD_USE_FAST_PTHREAD_MUTEX`
+- `BTHREAD_USE_FAST_PTHREAD_MUTEX` 平台选择宏：当前仅支持 Linux，固定移植其启用分支的原子状态 + futex 实现，不再使用 `std::mutex` 替代 `internal::FastPthreadMutex`（2026-10-06 修正，见 [mutex 分层与移植说明](../../knowledge/brpc-mutex-hooks.md)）。
 - 移除对 `iobuf.h`, `fd_guard.h`, `files/*.h`, `stack_trace.h`, `symbolize.h`, `murmurhash3`, `object_pool` 的依赖
 
 ### 5. Valgrind 守卫

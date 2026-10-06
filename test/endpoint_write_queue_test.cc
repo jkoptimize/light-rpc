@@ -247,8 +247,14 @@ TEST(RdmaWriteQueue, ConcurrentSubmissionsDuringFailureReleaseEveryBufferOnce) {
             go.wait();
             for (int j = 0; j < requests; ++j) {
                 IOBuf data = TrackedData(released);
-                if (ep.StartWrite(std::move(data)) < 0 && errno != EPIPE) {
-                    ++unexpected_error;
+                if (ep.StartWrite(std::move(data)) < 0) {
+                    // Like brpc's EFAILEDSOCKET fallback, ECANCELED is valid
+                    // after Failed() is published but before OnFailed stores
+                    // the concrete error. All other errors remain unexpected.
+                    const int error = errno;
+                    if (error != EPIPE && error != ECANCELED) {
+                        ++unexpected_error;
+                    }
                 }
             }
         });
@@ -258,6 +264,16 @@ TEST(RdmaWriteQueue, ConcurrentSubmissionsDuringFailureReleaseEveryBufferOnce) {
     for (auto& producer : producers) producer.join();
     EXPECT_EQ(0, unexpected_error.load());
     EXPECT_EQ(1 + threads * requests, released.load());
+    EXPECT_EQ(nullptr, Peer::Head(ep));
+
+    // Failure publication is complete: the concrete error must now be stable.
+    EXPECT_EQ(EPIPE, Peer::Error(ep));
+    {
+        IOBuf rejected = TrackedData(released);
+        EXPECT_EQ(-1, ep.StartWrite(std::move(rejected)));
+        EXPECT_EQ(EPIPE, errno);
+    }
+    EXPECT_EQ(2 + threads * requests, released.load());
     EXPECT_EQ(nullptr, Peer::Head(ep));
 }
 
