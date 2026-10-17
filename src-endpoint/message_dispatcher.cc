@@ -1,4 +1,6 @@
 #include <arpa/inet.h>
+#include <algorithm>
+#include <cstring>
 #include <thread>
 #include <cerrno>
 #include <system_error>
@@ -13,16 +15,27 @@ void MessageDispatcher::SetHandler(MessageHandler handler, void* arg) {
     _arg     = arg;
 }
 
-bool MessageDispatcher::CutInputMessage(IOBuf& read_buf, IOBuf& frame) {
-    if (read_buf.length() < 4) return false;
+int MessageDispatcher::CutInputMessage(IOBuf& read_buf, IOBuf& frame) {
+    if (read_buf.length() < 4) return 0;
 
-    const void* start = read_buf.fetch1();
-    uint32_t total_len = ntohl(*static_cast<const uint32_t*>(start));
+    // The fixed header can straddle IOBuf blocks. Read without consuming it.
+    IOBufAsZeroCopyInputStream input(read_buf);
+    uint32_t be = 0;
+    size_t copied = 0;
+    const void* data;
+    int size;
+    while (copied < sizeof(be) && input.Next(&data, &size)) {
+        const size_t n = std::min(sizeof(be) - copied, static_cast<size_t>(size));
+        memcpy(reinterpret_cast<char*>(&be) + copied, data, n);
+        copied += n;
+    }
+    const uint32_t total_len = ntohl(be);
 
-    if (total_len < kFrameHeaderBytes || read_buf.length() < total_len) return false;
+    if (total_len < kFrameHeaderBytes) { errno = EPROTO; return -1; }
+    if (read_buf.length() < total_len) return 0;
 
     read_buf.cutn(&frame, total_len);
-    return true;
+    return 1;
 }
 
 int MessageDispatcher::ProcessNewMessage(IOBuf& read_buf, FastRdmaEndpoint* endpoint) {
@@ -31,7 +44,9 @@ int MessageDispatcher::ProcessNewMessage(IOBuf& read_buf, FastRdmaEndpoint* endp
     int count = 0;
     while (true) {
         IOBuf frame;
-        if (!CutInputMessage(read_buf, frame)) break;
+        const int rc = CutInputMessage(read_buf, frame);
+        if (rc < 0) return -1;
+        if (rc == 0) break;
 
         auto handler = _handler;
         auto arg     = _arg;

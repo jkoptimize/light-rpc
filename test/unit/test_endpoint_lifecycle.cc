@@ -9,6 +9,7 @@
 #include "fast_channel.h"
 #include "fast_server.h"
 #include "fast_utils.h"
+#include "build/fast_impl.pb.h"
 #include "test/endpoint_test_owner.h"
 
 namespace fast {
@@ -215,6 +216,38 @@ TEST(ChannelLifecycle, ResponseAndFailureKeepFirstCompletion) {
     EXPECT_EQ(0u, second.error_code);
     ChannelPeer::Remove(*channel, 1);
     ChannelPeer::Remove(*channel, 2);
+    ref.reset();
+}
+TEST(ChannelLifecycle, ResponsePayloadExcludesAttachment) {
+    EndpointTestOwner owner;
+    auto ref = owner.release();
+    auto channel = ChannelPeer::Create(ref.get());
+    for (const std::string attachment : {std::string(), std::string("\0\xff", 2)}) {
+        ChannelPeer::Request pending;
+        Fixed32Bytes expected, response;
+        expected.set_val(12345);
+        pending.response = &response;
+        ASSERT_TRUE(ChannelPeer::Register(*channel, 1, &pending));
+        const std::string payload = expected.SerializeAsString();
+        const uint32_t len = 20 + payload.size() + attachment.size();
+        auto* bytes = new char[len];
+        const uint32_t header[5] = {htonl(len), htonl(MSG_NORMAL_RESPONSE),
+                                   htonl(1), 0, htonl(attachment.size())};
+        memcpy(bytes, header, 20);
+        memcpy(bytes + 20, payload.data(), payload.size());
+        memcpy(bytes + 20 + payload.size(), attachment.data(), attachment.size());
+        IOBuf frame;
+        frame.append_user_data_with_meta(bytes, len,
+            [](void* p) { delete[] static_cast<char*>(p); }, 0);
+        ChannelPeer::Response(*channel, frame);
+        EXPECT_TRUE(pending.done);
+        EXPECT_EQ(ERR_SUCCESS, pending.error_code);
+        EXPECT_EQ(expected.val(), response.val());
+        std::string actual;
+        pending.attachment.cutn(&actual, pending.attachment.length());
+        EXPECT_EQ(attachment, actual);
+        ChannelPeer::Remove(*channel, 1);
+    }
     ref.reset();
 }
 TEST(ChannelLifecycle, CloseWakesCallerWithoutHoldingPendingMutex) {

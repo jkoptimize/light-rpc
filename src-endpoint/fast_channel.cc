@@ -246,7 +246,7 @@ int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
 
     // Frame format (control QP SEND):
     //   [total_len:4B][msg_type:4B][rpc_id:4B][...]
-    // total_len already consumed by CutInputMessage; skip it.
+    // CutInputMessage preserves the frame header; skip total_len here.
     frame.pop_front(4);
 
     uint32_t msg_type = ntohl(*static_cast<const uint32_t*>(frame.fetch1()));
@@ -343,9 +343,11 @@ int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
         return -1;
     }
 
-    // Parse protobuf payload.
+    // Like brpc ProcessRpcResponse, separate the protobuf body from attachment.
+    IOBuf payload;
+    frame.cutn(&payload, payload_len);
     {
-        IOBufAsZeroCopyInputStream zcis(frame);
+        IOBufAsZeroCopyInputStream zcis(payload);
         if (!pending->response->ParseFromZeroCopyStream(&zcis)) {
             PLOG(ERROR) << "OnProcessResponse: failed to parse response, rpc_id=" << rpc_id;
             pending->error_code = ErrorCode::ERR_BAD_RESPONSE;
@@ -356,7 +358,6 @@ int FastChannel::OnProcessResponse(IOBuf& frame, void* arg) {
     }
 
     // Extract attachment (what remains after payload).
-    frame.pop_front(payload_len);
     if (attachment_size > 0) {
         pending->attachment.append(frame);
     }

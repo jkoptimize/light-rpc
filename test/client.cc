@@ -3,87 +3,101 @@
 #include "test/utils.h"
 
 #include <thread>
+#include <atomic>
+#include <chrono>
+#include <algorithm>
+#include <memory>
 
 const int duration_seconds = 10;
 const int max_rpc_cnt = 1000000;
 std::string local_ip, server_ip;
 
+// Benchmark-only controller until B4 introduces the production FastController.
+class BenchmarkController final : public google::protobuf::RpcController {
+ public:
+  void Reset() override { error_.clear(); }
+  bool Failed() const override { return !error_.empty(); }
+  std::string ErrorText() const override { return error_; }
+  void SetFailed(const std::string& reason) override { error_ = reason; }
+  void StartCancel() override {}
+  bool IsCanceled() const override { return false; }
+  void NotifyOnCancel(google::protobuf::Closure*) override {}
+ private:
+  std::string error_;
+};
+
 void Test(int req_bytes, int num_threads, int sleep_us = 0)
 {
-  std::vector<fast::FastChannel*> small_chan_vec;
-  std::vector<EchoService_Stub*> stub_vec;
+  std::vector<std::unique_ptr<fast::FastChannel>> channels;
+  std::vector<std::unique_ptr<EchoService_Stub>> stubs;
   for (int i = 0; i < num_threads; ++i) {
-    small_chan_vec.emplace_back(new fast::FastChannel(server_ip, 1024));
-    stub_vec.emplace_back(new EchoService_Stub(small_chan_vec[i]));
+    channels.emplace_back(new fast::FastChannel(server_ip, 1024));
+    stubs.emplace_back(new EchoService_Stub(channels.back().get()));
   }
 
   const std::string req_str(req_bytes, '#');
-  volatile bool stop_flag = false;
-  std::vector<std::thread> thread_vec(num_threads);
-  std::vector<int64_t *> latency_mat(num_threads);
-  std::vector<int64_t> query_cnt_vec(num_threads, 0);
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> workers;
+  std::vector<std::vector<int64_t>> samples(num_threads);
+  std::vector<uint64_t> successes(num_threads, 0), failures(num_threads, 0);
+  for (auto& sample : samples) sample.reserve(max_rpc_cnt);
 
-  for (int i = 0; i < num_threads; ++i)
-  {
-    latency_mat[i] = new int64_t[max_rpc_cnt];
-  }
-
-  int64_t start_time = GET_CURRENT_MS();
-  for (int k = 0; k < num_threads; ++k)
-  {
-    thread_vec[k] = std::thread([k, &stub_vec, &req_str, &stop_flag, &latency_mat, &query_cnt_vec, sleep_us]
-                                {
-      auto stub = stub_vec[k];
-      int64_t& query_cnt = query_cnt_vec[k];
-      int64_t* lat_arr = latency_mat[k];
-      int64_t time_1, time_2;
-      while (stop_flag == false) {
-        time_1 = GET_CURRENT_NS();
-        TestRequest request;
+  using Clock = std::chrono::steady_clock;
+  const auto start = Clock::now();
+  for (int k = 0; k < num_threads; ++k) {
+    workers.emplace_back([&, k] {
+      TestRequest request;
+      request.set_request(req_str);
+      while (!stop.load(std::memory_order_relaxed)) {
         TestResponse response;
-        request.set_request(req_str);
-        stub->Echo(nullptr, &request, &response, nullptr);
-        time_2 = GET_CURRENT_NS();
-        lat_arr[query_cnt++] = time_2 - time_1;  // ns
+        BenchmarkController controller;
+        const auto begin = Clock::now();
+        stubs[k]->Echo(&controller, &request, &response, nullptr);
+        const auto end = Clock::now();
+        if (controller.Failed() || response.response() != req_str) {
+          ++failures[k];
+        } else {
+          ++successes[k];
+          // Bound storage independently of the total successful call count.
+          if (samples[k].size() < static_cast<size_t>(max_rpc_cnt)) {
+            samples[k].push_back(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count());
+          }
+        }
         if (sleep_us) usleep(sleep_us);
-      } });
+      }
+    });
   }
-  sleep(duration_seconds);
-  stop_flag = true;
-  int64_t end_time = GET_CURRENT_MS();
+  std::this_thread::sleep_for(std::chrono::seconds(duration_seconds));
+  stop.store(true, std::memory_order_relaxed);
+  for (auto& worker : workers) worker.join();
+  // Include in-flight call draining, since their results are counted below.
+  const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
 
-  for (int i = 0; i < num_threads; ++i)
-  {
-    thread_vec[i].join();
-    delete stub_vec[i];
-    delete small_chan_vec[i];
+  uint64_t ok = 0, failed = 0;
+  std::vector<int64_t> latency;
+  for (int i = 0; i < num_threads; ++i) {
+    ok += successes[i];
+    failed += failures[i];
+    latency.insert(latency.end(), samples[i].begin(), samples[i].end());
   }
-
-  int64_t total_query = 0, index = 0;
-  for (int i = 0; i < num_threads; ++i)
-  {
-    total_query += query_cnt_vec[i];
+  std::sort(latency.begin(), latency.end());
+  std::cout << "threads=" << num_threads << " success=" << ok
+            << " failed=" << failed << " elapsed_s=" << elapsed
+            << " success_qps=" << (elapsed > 0 ? ok / elapsed : 0)
+            << " samples=" << latency.size()
+            << " samples_truncated=" << (ok > latency.size());
+  if (latency.empty()) {
+    std::cout << " p50_us=NA p99_us=NA p999_us=NA";
+  } else {
+    auto percentile = [&](double p) {
+      return latency[static_cast<size_t>((latency.size() - 1) * p)] / 1000.0;
+    };
+    std::cout << " p50_us=" << percentile(0.5)
+              << " p99_us=" << percentile(0.99)
+              << " p999_us=" << percentile(0.999);
   }
-  std::vector<int64_t> lat_record(total_query, 0);
-  for (int i = 0; i < num_threads; ++i)
-  {
-    for (int j = 0; j < query_cnt_vec[i]; ++j)
-    {
-      lat_record[index++] = latency_mat[i][j];
-    }
-  }
-  std::sort(lat_record.begin(), lat_record.end());
-
-  int64_t qps = total_query * 1000 / (end_time - start_time);
-  int64_t median_latency = lat_record[(total_query - 1) / 2] / 1000; // us
-  int64_t p99_latency = lat_record[(total_query - 1) * 0.99] / 1000; // us
-
-  for (int i = 0; i < num_threads; ++i)
-  {
-    delete latency_mat[i];
-  }
-
-  std::cout << num_threads << " " << qps << " " << median_latency << " " << p99_latency << std::endl;
+  std::cout << std::endl;
 }
 
 int main(int argc, char *argv[])

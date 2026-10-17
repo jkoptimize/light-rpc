@@ -136,7 +136,7 @@ int FastServer::OnProcessRequest(IOBuf& frame, void* arg) {
     if (ep->Failed()) return -1;
 
     // Frame: [total_len:4B][msg_type:4B][rpc_id:4B][...]
-    // total_len already consumed by CutInputMessage; skip it.
+    // CutInputMessage preserves the frame header; skip total_len here.
     uint32_t total_len = ntohl(*static_cast<const uint32_t*>(frame.fetch1()));
     frame.pop_front(4);
 

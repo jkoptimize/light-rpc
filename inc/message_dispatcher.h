@@ -26,8 +26,9 @@ public:
     // Returns number of frames dispatched, -1 on error.
     int ProcessNewMessage(IOBuf& read_buf, FastRdmaEndpoint* endpoint);
 
-    // Cut one complete frame from read_buf.  Returns true on success.
-    bool CutInputMessage(IOBuf& read_buf, IOBuf& frame);
+    // Returns 1 for a complete frame, 0 for incomplete input, -1 for an
+    // invalid frame (errno=EPROTO). Incomplete/invalid input is not consumed.
+    int CutInputMessage(IOBuf& read_buf, IOBuf& frame);
 
     MessageHandler  _handler = nullptr;
     void*           _arg     = nullptr;
