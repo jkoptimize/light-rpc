@@ -1,5 +1,6 @@
 #include <sstream>
 #include <cstdlib>
+#include <algorithm>
 #include "fast_iobuf.h"
 #include "fast_block_pool.h"
 
@@ -180,6 +181,32 @@ namespace fast
             }
         }
         return saved_n;
+    }
+
+    // Ported from brpc butil::IOBuf::copy_to(void*, size_t, size_t).
+    size_t IOBuf::copy_to(void* d, size_t n, size_t pos) const
+    {
+        const size_t nref = _ref_num();
+        // Skip pos bytes; offset is relative to the starting BlockRef.
+        size_t offset = pos;
+        size_t i = 0;
+        for (; offset != 0 && i < nref; ++i) {
+            const BlockRef& r = _ref_at(i);
+            if (offset < (size_t)r.length) {
+                break;
+            }
+            offset -= r.length;
+        }
+        size_t m = n;
+        for (; m != 0 && i < nref; ++i) {
+            const BlockRef& r = _ref_at(i);
+            const size_t nc = std::min(m, (size_t)r.length - offset);
+            memcpy(d, r.block->data + r.offset + offset, nc);
+            offset = 0;
+            d = (char*)d + nc;
+            m -= nc;
+        }
+        return n - m;
     }
 
     size_t IOBuf::cutn(void *out, size_t n)

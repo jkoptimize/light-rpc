@@ -95,6 +95,12 @@ namespace fast
         size_t cutn(IOBuf *out, size_t n);
         size_t cutn(void *out, size_t n);
         size_t cutn(std::string *out, size_t n);
+        // Prevent an IOBuf object from being mistaken for raw output memory,
+        // as in brpc. Use append() to share another IOBuf's payload.
+        size_t copy_to(IOBuf*, size_t = (size_t)-1L, size_t = 0) const = delete;
+        // Copy up to n bytes starting at pos without consuming this buffer.
+        // Returns the actual number copied; the caller provides enough space.
+        size_t copy_to(void* out, size_t n = (size_t)-1L, size_t pos = 0) const;
         bool cut1(void *c);
         void append(const IOBuf &other);
         void append(const Movable &other);

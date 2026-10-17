@@ -1,6 +1,4 @@
 #include <arpa/inet.h>
-#include <algorithm>
-#include <cstring>
 #include <thread>
 #include <cerrno>
 #include <system_error>
@@ -18,17 +16,9 @@ void MessageDispatcher::SetHandler(MessageHandler handler, void* arg) {
 int MessageDispatcher::CutInputMessage(IOBuf& read_buf, IOBuf& frame) {
     if (read_buf.length() < 4) return 0;
 
-    // The fixed header can straddle IOBuf blocks. Read without consuming it.
-    IOBufAsZeroCopyInputStream input(read_buf);
+    // Like brpc ParseRpcMessage, copy the header without consuming input.
     uint32_t be = 0;
-    size_t copied = 0;
-    const void* data;
-    int size;
-    while (copied < sizeof(be) && input.Next(&data, &size)) {
-        const size_t n = std::min(sizeof(be) - copied, static_cast<size_t>(size));
-        memcpy(reinterpret_cast<char*>(&be) + copied, data, n);
-        copied += n;
-    }
+    read_buf.copy_to(&be, sizeof(be));
     const uint32_t total_len = ntohl(be);
 
     if (total_len < kFrameHeaderBytes) { errno = EPROTO; return -1; }

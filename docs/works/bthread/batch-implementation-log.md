@@ -32,3 +32,13 @@
 - `cmake --build build -j 4` 成功。
 - `ctest --test-dir build --output-on-failure --timeout 60`：7/7 测试目标通过，涵盖单测、写队列、窗口唤醒、bthread runtime 与日志构建模式。
 - 硬件故障注入、RDMA 性能基线和压测运行结果尚未验证。B0 代码修复已落地，硬件基线待采集；B1 为下一代码批次。
+
+### B0 补充：按 brpc 补齐 IOBuf::copy_to
+
+根据用户复核，移除 CutInputMessage 内临时编写的输入流遍历，改为调用 `copy_to(&be, sizeof(be))`，对应 brpc `ParseRpcMessage` 读取局部帧头的方式。
+
+- 移植上述 brpc 基线 `butil/iobuf.cpp::IOBuf::copy_to(void*, size_t, size_t)`：按 pos 跳过 BlockRef，再依次复制，返回实际复制字节数；默认 n 为 size_t 最大值，不消费输入、不改变引用所有权。
+- 原版 `iobuf::cp` 仅转发 memcpy，项目直接调用 memcpy，不额外增加纯转发函数。算法与边界处理保留原版；本次仅补齐所需 raw-buffer 重载，不扩展字符串等接口。
+- 保留原版防止 IOBuf 指针误入 void* 重载的编译期约束，使用本项目 C++17 的 deleted overload 表达，不引入旧编译器兼容分支。
+- 新增纯逻辑测试覆盖 SmallView/BigView、非零 BlockRef offset、跨块位置、默认长度、零长度、超范围位置、超长读取、输出边界及输入长度/资源寿命保持。先观察缺少接口导致的编译失败，再完成实现。
+- 本次 `cmake --build build -j 4` 成功；`ctest --test-dir build --output-on-failure --timeout 60` 7/7 目标通过；`git diff --check` 通过。未修改 verbs 或开展性能测试。
