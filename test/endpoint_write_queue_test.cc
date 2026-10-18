@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "fast_rdma_endpoint.h"
+#include "butil/object_pool.h"
 
 namespace {
 struct YieldBarrier {
@@ -35,8 +36,17 @@ namespace fast {
 class FastRdmaEndpointWriteTestPeer {
 public:
     using Request = FastRdmaEndpoint::WriteRequest;
+    static Request* Allocate() {
+        auto* req = butil::get_object<Request>();
+        CHECK(req != nullptr);
+        req->next = Request::UNCONNECTED;
+        return req;
+    }
+    static void ReturnSuccess(FastRdmaEndpoint& ep, Request* req) {
+        ep.ReturnSuccessfulWriteRequest(req);
+    }
     static Request* Publish(FastRdmaEndpoint& ep, Request* req) {
-        return ep.PublishWriteRequest(req);
+        return ep._write_head.exchange(req, std::memory_order_release);
     }
     static Request* Enqueue(FastRdmaEndpoint& ep, Request* req) {
         Request* prev = Publish(ep, req);
@@ -50,7 +60,7 @@ public:
     static int Fail(FastRdmaEndpoint& ep, Request* req, int error) {
         return ep.FailWrite(req, error);
     }
-    static int Error(FastRdmaEndpoint& ep) { return ep.WriteError(); }
+    static int Error(FastRdmaEndpoint& ep) { return ep.error(); }
     static Request* Head(FastRdmaEndpoint& ep) {
         return ep._write_head.load(std::memory_order_acquire);
     }
@@ -80,7 +90,7 @@ IOBuf TrackedData(std::atomic<int>& released) {
 }
 
 Request* TrackedRequest(std::atomic<int>& released) {
-    auto* req = new Request;
+    auto* req = Peer::Allocate();
     IOBuf data = TrackedData(released);
     req->data.swap(data);
     return req;
@@ -114,12 +124,40 @@ TEST(RdmaWriteQueue, CompletedEpochReleasesTheWriteRight) {
     EndpointTestOwner endpoint_owner;
     auto& ep = endpoint_owner.get();
     for (int i = 0; i < 2; ++i) {
-        auto* req = new Request;
+        auto* req = Peer::Allocate();
         EXPECT_EQ(nullptr, Peer::Enqueue(ep, req));
         EXPECT_TRUE(Peer::Complete(ep, req, true));
         EXPECT_EQ(nullptr, Peer::Head(ep));
-        delete req;
+        Peer::ReturnSuccess(ep, req);
     }
+}
+
+TEST(RdmaWriteQueue, PoolReuseClearsFailedDataAndPreservesAlignment) {
+    std::atomic<int> released{0};
+    Request* recycled = nullptr;
+    {
+        EndpointTestOwner owner;
+        auto& ep = owner.get();
+        recycled = TrackedRequest(released);
+        EXPECT_EQ(0u, reinterpret_cast<uintptr_t>(recycled) % BAIDU_CACHELINE_SIZE);
+        EXPECT_EQ(BAIDU_CACHELINE_SIZE, alignof(Request));
+        RecordProperty("write_request_size", static_cast<int>(sizeof(Request)));
+        RecordProperty("write_request_alignment", static_cast<int>(alignof(Request)));
+        Peer::Enqueue(ep, recycled);
+        Peer::Fail(ep, recycled, EPIPE);
+        EXPECT_EQ(1, released.load());
+    }
+    // Same-thread ObjectPool return/get reuses the last free node.
+    auto* req = Peer::Allocate();
+    EXPECT_EQ(recycled, req);
+    EXPECT_TRUE(req->data.empty());
+    EXPECT_EQ(Request::UNCONNECTED, req->next);
+    EndpointTestOwner owner;
+    auto& ep = owner.get();
+    Peer::Enqueue(ep, req);
+    EXPECT_TRUE(Peer::Complete(ep, req, true));
+    Peer::ReturnSuccess(ep, req);
+    EXPECT_EQ(1, released.load());
 }
 
 TEST(RdmaWriteQueue, ConsumerWaitsForPublishedNodeToBeConnected) {

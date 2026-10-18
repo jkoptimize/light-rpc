@@ -1,5 +1,7 @@
 # bthread 整改批次实施记录
 
+当前进度（2026-10-18）：B0 代码与 B1 已落地并通过构建/回归；B0 硬件性能基线仍待采集，B2～B7 尚未实施。下文保留各批实施时的历史状态。
+
 ## 2026-10-17：启动 B0
 
 用户已审阅方案并授权开始实现。按 [实施计划](rpc-bthread-integration-plan.md) B0～B7 推进，保留已确认的裁剪边界。尚未开始 B1～B7，不能将本记录视为 bthread RPC 接入完成。
@@ -42,3 +44,29 @@
 - 保留原版防止 IOBuf 指针误入 void* 重载的编译期约束，使用本项目 C++17 的 deleted overload 表达，不引入旧编译器兼容分支。
 - 新增纯逻辑测试覆盖 SmallView/BigView、非零 BlockRef offset、跨块位置、默认长度、零长度、超范围位置、超长读取、输出边界及输入长度/资源寿命保持。先观察缺少接口导致的编译失败，再完成实现。
 - 本次 `cmake --build build -j 4` 成功；`ctest --test-dir build --output-on-failure --timeout 60` 7/7 目标通过；`git diff --check` 通过。未修改 verbs 或开展性能测试。
+
+## 2026-10-18：B1 发送节点与队列（D01、D03）
+
+开始时工作区干净，light-rpc HEAD 为 `9d6e4d45ec8250b32550f3020c8982d7e766c338`。brpc 参考仍为 `d688e7550be4b4c41b9a4dc55add2a2c75be1296`。
+
+### 原版对应与改动
+
+- 对照 `Socket::Write` 的 get_object 与每次获取后初始化，以及 `Socket::ReturnSuccessfulWriteRequest/ReturnFailedWriteRequest`：StartWrite 改用已移植的 `butil::get_object<WriteRequest>`，成功路径检查 data 已空后归还，失败路径先 clear 再归还。替换 StartWrite、KeepWrite、失败排空的所有节点 delete；池归还后不再读取节点。
+- 每次获取后显式设置 `next=UNCONNECTED`，不依赖首次构造的默认成员初始化。采用原版 `BAIDU_CACHELINE_ALIGNMENT`；本次实际测得 `sizeof(WriteRequest)=64`、`alignof(WriteRequest)=64`，池返回地址也满足对齐。
+- 对照 `Socket::StartWrite`，将 `_write_head.exchange(req, release)` 直接放在 StartWrite，移除 PublishWriteRequest。保留 next 衔接、消费者反转、IsWriteComplete 的 acquire CAS、最后节点保留及并发发布后的失败检查，未加强原子内存序或新增锁。
+- 删除纯转发 WriteError，直接读取既有 error()。保留发布前后错误检查的原有作用。
+- 测试 peer 直接操作发布原子，不为测试保留生产包装函数；测试节点统一使用同一个对象池，避免向对象池归还 new 分配的节点。
+
+### 裁剪与未实施部分
+
+本批节点保留实际使用的 data、next。Endpoint 回调上下文在 B2 成套引入；id_wait 及对应通知在 B4 引入，不预填尚未使用的状态。不增加每节点 Endpoint 智能指针、控制位、认证或 pipelining 字段。
+
+`_pending_keepwrite_req`、当前异步连接和 BeforeRecycled 的兜底协议本批保留，B2 再完整替换；本批不修改 verbs、CQ 消费权、事件注销或后台恢复。减少逐请求堆分配是机制上的预期；64 字节布局和对象池保留内存也有成本，未实测吞吐或延迟，不宣称性能提升幅度。
+
+### 验证
+
+- `cmake --build build -j 4` 成功。
+- `build/rdma_write_queue_tests --gtest_output=xml:/tmp/light-rpc-b1-write-queue.xml`：9/9 通过，包括新加的池复用、失败缓冲清理、64 字节对齐验证；原有 FIFO、UNCONNECTED 等待、并发失败排空、握手暂存失败、真实 StartWrite 同步建连失败回归保留。
+- `ctest --test-dir build --output-on-failure --timeout 60`：7/7 测试目标通过，包含生命周期、写窗口唤醒和 bthread runtime。
+- 全局检索确认生产及测试均不再使用 PublishWriteRequest、WriteError 或 WriteRequest 的 new/delete；`git diff --check` 通过。
+- 上述队列和生命周期测试使用无 QP/CQ 的 Endpoint；未运行 RDMA 硬件集成或压测。下一批为 B2 建连与握手所有权协议。

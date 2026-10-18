@@ -7,6 +7,7 @@
 #include <future>
 #include <thread>
 #include "fast_channel.h"
+#include "butil/object_pool.h"
 #include "fast_server.h"
 #include "fast_utils.h"
 #include "build/fast_impl.pb.h"
@@ -21,9 +22,11 @@ public:
         return ep.ReadFromFd(fd, &c, 1);
     }
     static void Pending(FastRdmaEndpoint& ep, IOBuf&& data) {
-        auto* req = new FastRdmaEndpoint::WriteRequest;
+        auto* req = butil::get_object<FastRdmaEndpoint::WriteRequest>();
+        CHECK(req != nullptr);
+        req->next = FastRdmaEndpoint::WriteRequest::UNCONNECTED;
         req->data.swap(data);
-        req->next = ep.PublishWriteRequest(req);
+        req->next = ep._write_head.exchange(req, std::memory_order_release);
         ep._pending_keepwrite_req.store(req);
     }
 };

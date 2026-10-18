@@ -202,13 +202,13 @@ private:
     void UnregisterTcpEvent();
 
     // ---- Write queue (ref brpc Socket::StartWrite / KeepWrite / IsWriteComplete) ----
-    struct WriteRequest {
+    struct BAIDU_CACHELINE_ALIGNMENT WriteRequest {
         static WriteRequest* const UNCONNECTED;
         IOBuf         data;
         WriteRequest* next = UNCONNECTED;
     };
-    WriteRequest* PublishWriteRequest(WriteRequest* req);
-    int WriteError() const;
+    void ReturnSuccessfulWriteRequest(WriteRequest* req);
+    void ReturnFailedWriteRequest(WriteRequest* req);
     int FailWrite(WriteRequest* req, int error);
     void ReleaseAllFailedWriteRequests(WriteRequest* req);
     void FailPendingWrite(int error);

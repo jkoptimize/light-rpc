@@ -12,6 +12,7 @@
 #include <system_error>
 #include "butex.h"
 #include "butil/time.h"
+#include "butil/object_pool.h"
 
 #include "event_dispatcher.h"
 #include "fast_block_pool.h"
@@ -932,29 +933,35 @@ ssize_t FastRdmaEndpoint::CutFromIOBufList(IOBuf** from, size_t ndata) {
 FastRdmaEndpoint::WriteRequest* const FastRdmaEndpoint::WriteRequest::UNCONNECTED =
     reinterpret_cast<WriteRequest*>(static_cast<intptr_t>(-1));
 
-FastRdmaEndpoint::WriteRequest* FastRdmaEndpoint::PublishWriteRequest(WriteRequest* req) {
-    // Match brpc: publish initialized request fields to IsWriteComplete's acquire.
-    return _write_head.exchange(req, std::memory_order_release);
+void FastRdmaEndpoint::ReturnSuccessfulWriteRequest(WriteRequest* req) {
+    DCHECK(req->data.empty());
+    butil::return_object(req);
+    // Do not access req after returning it to the pool.
 }
 
-int FastRdmaEndpoint::WriteError() const {
-    return error();
+void FastRdmaEndpoint::ReturnFailedWriteRequest(WriteRequest* req) {
+    // ObjectPool does not call the destructor on return.
+    req->data.clear();
+    butil::return_object(req);
 }
 
 int FastRdmaEndpoint::StartWrite(IOBuf&& data) {
     if (Failed()) { errno = error(); return -1; }
-    if (const int error = WriteError()) {
+    if (const int error = this->error()) {
         errno = error;
         return -1;
     }
-    auto* req = new (std::nothrow) WriteRequest;
+    auto* req = butil::get_object<WriteRequest>();
     if (req == nullptr) {
         errno = ENOMEM;
         return -1;
     }
     req->data.swap(data);
+    // Pool reuse does not rerun member initializers. Reset before publication.
+    req->next = WriteRequest::UNCONNECTED;
 
-    WriteRequest* prev = PublishWriteRequest(req);
+    // Match brpc: publish initialized fields to IsWriteComplete's acquire.
+    WriteRequest* const prev = _write_head.exchange(req, std::memory_order_release);
     if (prev != nullptr) {
         // The consumer may already be waiting on UNCONNECTED. Do not touch
         // req after publishing the link: the consumer may immediately free it.
@@ -964,7 +971,7 @@ int FastRdmaEndpoint::StartWrite(IOBuf&& data) {
 
     req->next = nullptr;
     // Failure can race with the initial check and queue publication.
-    if (const int error = WriteError()) return FailWrite(req, error);
+    if (const int error = this->error()) return FailWrite(req, error);
 
     if (!_handshake_ok.load(std::memory_order_acquire)) {
         _pending_keepwrite_req.store(req, std::memory_order_release);
@@ -990,7 +997,7 @@ int FastRdmaEndpoint::StartWrite(IOBuf&& data) {
     if (nw < 0 && errno != EAGAIN) return FailWrite(req, errno);
 
     if (IsWriteComplete(req, true, nullptr)) {
-        delete req;
+        ReturnSuccessfulWriteRequest(req);
         return 0;
     }
     return StartKeepWrite(req);
@@ -1040,11 +1047,11 @@ void FastRdmaEndpoint::ReleaseAllFailedWriteRequests(WriteRequest* req) {
         while ((next = req->next) != nullptr) {
             WriteRequest* done = req;
             req = next;
-            delete done;
+            ReturnFailedWriteRequest(done);
         }
         req->data.clear();
     } while (!IsWriteComplete(req, true, nullptr));
-    delete req;
+    ReturnFailedWriteRequest(req);
 }
 
 ssize_t FastRdmaEndpoint::DoWrite(WriteRequest* req) {
@@ -1109,7 +1116,7 @@ void FastRdmaEndpoint::KeepWrite(WriteRequest* req) {
         if (req->next != nullptr && req->data.empty()) {
             WriteRequest* done = req;
             req = req->next;
-            delete done;
+            ReturnSuccessfulWriteRequest(done);
         }
 
         const ssize_t nw = DoWrite(req);
@@ -1122,7 +1129,7 @@ void FastRdmaEndpoint::KeepWrite(WriteRequest* req) {
         while (req->next != nullptr && req->data.empty()) {
             WriteRequest* done = req;
             req = req->next;
-            delete done;
+            ReturnSuccessfulWriteRequest(done);
         }
 
         if (nw <= 0) {
@@ -1137,7 +1144,7 @@ void FastRdmaEndpoint::KeepWrite(WriteRequest* req) {
 
         // Return when there's no more WriteRequests and req is completely written.
         if (IsWriteComplete(cur_tail, (req == cur_tail), &cur_tail)) {
-            delete req;
+            ReturnSuccessfulWriteRequest(req);
             return;
         }
     } while (true);
